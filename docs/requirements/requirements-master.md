@@ -12,6 +12,8 @@
 > **V1.5（2026-08-25 追加）**：**技术选型定案**——C#/.NET 10 LTS（.NET 8/9 于 2026-11-10 EOL）+ WinForms 薄壳 + WebView2 + ASP.NET Core Minimal API；Fixed Version 运行时改为平台共享目录 + per-app opt-in（250MB+ 不宜 per-app 打包）。详见 `docs/design/2026-08-25-tech-selection.md`。
 >
 > **V1.6（2026-08-25 追加）**：**完全移除模式 A（系统 Chrome）**——WebView2 成为唯一渲染引擎（ADR-011）。理由：模式 A 复杂度（Chrome 探测/profile 策略/进程树边界/CDP 风险/双引擎协调）≫ 价值（复用系统 Chrome 登录态，已被 ADR-009 放弃）。详见 `docs/design/2026-08-25-drop-mode-a.md`。
+>
+> **V1.7（2026-08-25 追加）**：**技术栈转向 Tauri（Rust）四平台**——用户需求升级为"天然支持 Windows/macOS/Linux/鸿蒙 四平台"。Tauri 2 是 2026 年唯一官方路线覆盖四平台的框架（鸿蒙为 `feat/open-harmony` 分支，开发中）。原 .NET/WebView2（仅 Windows）弃用。详见 `docs/design/2026-08-25-tech-selection.md`。
 
 **图例**
 - ✅ 已定（附决策出处）
@@ -23,7 +25,7 @@
 ## 1. 产品定位
 
 ### 1.1 一句话
-把任意 Web 应用当作“原生桌面应用”来运行与管理的 Windows 平台：**WebView2 单引擎渲染 + per-app 身份隔离（cookie/密钥/扩展）+ 生命周期钩子 + 工作项驱动生命周期（无感常驻/按需托盘）+ 后台驻留 + 桌面快捷方式 + Web 管理控制台**。
+把任意 Web 应用当作“原生桌面应用”来运行与管理的**四平台（Windows/macOS/Linux/鸿蒙）**平台：**系统 WebView 单引擎渲染（Tauri）+ per-app 身份隔离（cookie/密钥/扩展）+ 生命周期钩子 + 工作项驱动生命周期（无感常驻/按需托盘）+ 后台驻留 + 桌面快捷方式 + Web 管理控制台**。
 
 ### 1.2 差异化（对标）
 | 方案 | 差距 |
@@ -55,7 +57,7 @@
 | `id` | string（唯一） | ✅ | 应用唯一标识，供 `--launch <id>` 使用 |
 | `name` | string | ✅ | 显示名 |
 | `url` | string | ✅ | 应用地址 |
-| `runtimeProfile` | `"evergreen"` \| `"fixed"` | ✅ | WebView2 运行时档位（默认 evergreen；fixed=平台共享目录 opt-in） |
+| `runtimeProfile` | `"system"` \| `"pinned"` | ⚠️ | 渲染运行时档位：默认跟随系统 WebView；`pinned`=锁定版本（仅 Windows WebView2 支持 Fixed Version；其余平台系统 WebView 无此概念，暂忽略） |
 | `closeAction` | `"background"` \| `"quit"` | ⚠️ O2 | 关窗行为 |
 | `hooks` | `{ preLaunch[], postExit[] }` | ⚠️ O3 | 钩子命令列表 |
 | `hookOptions` | shell / timeout / blocking | ⚠️ O3 | 每个事件的钩子选项 |
@@ -72,22 +74,23 @@
 
 **CRUD**：控制台提供应用增删改查；删除前二次确认；系统应用（管理控制台）受保护——可删除但可经管理 API 恢复重建。
 
-### 2.2 渲染引擎（单引擎：WebView2）
+### 2.2 渲染引擎（单引擎：系统 WebView，Tauri 四平台）
 
-> **ADR-011**：完全移除模式 A（系统 Chrome），WebView2 为唯一渲染引擎。产品定位：**轻量 WebView2 SSB 管理平台**。
+> **ADR-011 + V1.7**：完全移除模式 A（系统 Chrome）。渲染引擎由 **Tauri 抽象为各平台系统 WebView**（Windows=WebView2 / macOS=WKWebView / Linux=WebKitGTK / 鸿蒙=ArkWeb），四平台统一。产品定位：**轻量四平台 Web SSB 管理平台**。
 
-**渲染能力（WebView2，均为稳定 API）**
+**渲染能力（Tauri 各平台系统 WebView）**
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 内核 | ✅ | WebView2（Evergreen 默认 / Fixed Version 平台共享目录 opt-in） |
-| 每应用身份隔离 | ✅ | 每应用独立 UserDataFolder |
-| cookie 管理 | ✅ | `CookieManager`（增删查改） |
-| CSS/JS 注入 | ✅ | `AddScriptToExecuteOnDocumentCreatedAsync` |
-| 扩展加载（per-app） | ✅ | `AddBrowserExtensionAsync`（本地 unpacked） |
-| 运行时缺失 | ✅ | 检测 + 引导下载（bootstrap） |
+| 内核 | ✅ | Tauri 抽象：各平台系统 WebView（Win=WebView2 / mac=WKWebView / Linux=WebKitGTK / 鸿蒙=ArkWeb） |
+| 每应用隔离 | ✅ | 每应用独立 WebviewWindow / 独立数据目录 |
+| cookie 管理 | ✅ | 各平台 cookie API（Win=CookieManager 等） |
+| CSS/JS 注入 | ✅ | `add_script_to_execute_on_document_created`（跨平台） |
+| 扩展加载（per-app） | ⚠️ P1 | Windows(WebView2) 本地 unpacked 优先；macOS/Linux/鸿蒙 按平台扩展机制后置 |
+| 运行时缺失 | ✅ | Win=WebView2 bootstrap；mac=系统自带；Linux=系统依赖 |
 | 后台驻留 | ✅ | 隐藏窗口不销毁渲染器 → WebSocket 保活 |
 | 深控 | ✅ | 原生控件开关 / 注入 / 扩展，无 CDP 暴露 |
-| DevTools | ✅ | 支持，默认不对普通用户暴露 |
+| DevTools | ✅ | Tauri 支持，默认不对普通用户暴露 |
+| **四平台** | ✅ | **Windows / macOS / Linux / 鸿蒙** |
 
 ### 2.3 生命周期钩子
 | 项 | 状态 |
@@ -240,14 +243,14 @@
 | ADR-001 | 双模引擎 per-app，非全局开关 | V1.1 |
 | ADR-002 | 模式 A = 轻控制（深定制仅模式 B） | V1.2 |
 | ADR-002（修订）| 模式 A = profile 级控制：默认独立 profile，应用级身份隔离+跨内核一致；仍不开放 CDP | V1.4 / ADR-009 |
-| ADR-011 | **完全移除模式 A**——WebView2 为唯一渲染引擎（单引擎化） | V1.6 |
-| ADR-003（修订）| 模式 B 内核 = WebView2；Evergreen 默认，Fixed Version 为平台共享目录 + per-app opt-in（250MB+ 不宜 per-app 打包） | V1.5 / 技术选型 |
+| ADR-011 | **完全移除模式 A（系统 Chrome）**——渲染引擎由 Tauri 抽象为各平台系统 WebView（单引擎化） | V1.6/1.7 |
+| ADR-003（修订2）| 渲染引擎 = 各平台系统 WebView（Win=WebView2 / mac=WKWebView / Linux=WebKitGTK / 鸿蒙=ArkWeb），Tauri 抽象 | V1.7 / 技术选型 |
 | ADR-004 | 后台驻留按模式分机制（B 隐藏 / A 退出） | V1.2 |
 | ADR-010 | 工作项驱动生命周期：平台随“第一个 app 启动/最后一个工作项结束”而启停；托盘按需动态出现 | V1.4 |
 | ADR-005 | 后台服务层 = 常驻进程，非 Windows Service | V1.2 |
 | ADR-006 | 进程回收 = Job Object | V1.2 |
 | ADR-007 | 管理界面 = Web 控制台，且为平台首个默认应用 | V1.3 |
-| ADR-008（修订）| 技术栈 = C#/.NET 10 LTS + WinForms 薄壳 + WebView2 + ASP.NET Core Minimal API（详见技术选型文档） | V1.5 / 技术选型 |
+| ADR-008（修订2）| 技术栈 = **Tauri 2 (Rust + Web)**，四平台（Win/macOS/Linux/鸿蒙）| V1.7 / 技术选型 |
 | ADR-009 | 应用身份（AppIdentity）：cookie / 密钥 / 插件按应用隔离并跨内核一致；模式 A 默认独立 profile | V1.4 |
 
 ---

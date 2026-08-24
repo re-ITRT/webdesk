@@ -18,13 +18,14 @@
 
 | 层 | 选型 |
 |---|---|
-| 语言/运行时 | C# / **.NET 10 LTS** |
-| 原生薄壳 | WinForms（窗口承载 + 动态托盘 + 通知）|
-| 渲染引擎 | WebView2（唯一引擎，Evergreen 默认，Fixed Version 共享目录 opt-in）|
-| 本地 HTTP | ASP.NET Core Minimal API（管理 API + 静态控制台，仅回环+token）|
+| 框架 | **Tauri 2**（Rust + Web 前端）|
+| 渲染引擎 | 系统 WebView（Windows=WebView2 / macOS=WKWebView / Linux=WebKitGTK / 鸿蒙=ArkWeb）|
 | 管理界面 | 内置 Web 控制台（HTML/CSS/JS，作为首个默认 Web 应用）|
-| 进程/生命周期 | 命名互斥体 + 命名管道 IPC + Job Object 进程树回收 + 工作项驱动生命周期 |
-| 配置 | JSON（`%APPDATA%\WebDesk\config\`）|
+| 本地 HTTP | Rust axum（管理 API + 静态控制台，仅回环+token）|
+| 系统集成 | Rust + tauri-plugin（托盘/单例/快捷方式/钩子/进程）|
+| 进程/生命周期 | 单例互斥 + IPC + Job Object/进程组 + 工作项驱动生命周期 |
+| 配置 | JSON（各平台配置目录）|
+| **跨平台** | **Windows / macOS / Linux / 鸿蒙** |
 
 ## 仓库结构
 
