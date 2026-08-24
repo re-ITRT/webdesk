@@ -10,15 +10,7 @@
     "beforeBuildCommand": "npm --prefix src-frontend run build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "WebDesk",
-        "width": 800,
-        "height": 600,
-        "resizable": true,
-        "fullscreen": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

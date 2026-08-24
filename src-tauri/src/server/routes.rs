@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -86,6 +86,21 @@ pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
     }
 
     log::info!("管理 API 已启动: http://127.0.0.1:{port}");
+
+    // 自动启动管理控制台（第一个默认 WebApp，吃自己的狗粮）：
+    // daemon 起来后，用自身 WebView 机制打开管理控制台窗口。
+    // 用 --hidden 启动时不自动弹控制台（后台服务模式）。
+    {
+        let is_hidden = std::env::args().any(|a| a == "--hidden");
+        if !is_hidden {
+            let handle = state.app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = crate::scheduler::launch_by_id(&handle, "console").await {
+                    log::error!("[启动] 自动打开管理控制台失败: {e}");
+                }
+            });
+        }
+    }
 
     axum::serve(listener, app).await?;
     Ok(())
