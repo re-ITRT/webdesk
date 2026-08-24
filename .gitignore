@@ -1,0 +1,28 @@
+# .NET build outputs
+bin/
+obj/
+*.user
+
+# Visual Studio
+.vs/
+*.suo
+
+# Rider
+.idea/
+
+# Test results
+TestResults/
+*.trx
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local config (never commit)
+config/
+*.local.json
