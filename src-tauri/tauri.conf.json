@@ -2,12 +2,12 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WebDesk",
   "version": "0.1.0",
-  "identifier": "com.webdesk.app",
+  "identifier": "com.webdesk.desktop",
   "build": {
     "frontendDist": "../src-frontend/dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "npm --prefix src-frontend run dev",
+    "beforeBuildCommand": "npm --prefix src-frontend run build"
   },
   "app": {
     "windows": [
