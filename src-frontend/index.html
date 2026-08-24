@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebDesk 控制台</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        --border: #e0e0e0;
+        --muted: #888;
+        --bg: #fafafa;
+        --card: #fff;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --border: #3a3a3a;
+          --muted: #aaa;
+          --bg: #1a1a1a;
+          --card: #242424;
+        }
+      }
+      body { margin: 0; padding: 24px; background: var(--bg); color: var(--fg, inherit); }
+      .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+      .toolbar h1 { font-size: 1.4rem; margin: 0; flex: 1; }
+      .status-bar { margin-bottom: 16px; color: var(--muted); font-size: 0.9rem; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+      .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+      .card.system { border-color: #4a90d9; }
+      .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+      .card-header strong { flex: 1; }
+      .card-body { font-size: 0.85rem; margin-bottom: 10px; }
+      .muted { color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
+      .card-actions { display: flex; gap: 6px; }
+      .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; background: #eee; }
+      .badge.system { background: #dbe9ff; color: #1a5bbf; }
+      .badge.运行中 { background: #d4f5d4; color: #1a7a1a; }
+      .badge.后台 { background: #fff3d4; color: #8a6a1a; }
+      button {
+        padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px;
+        background: var(--card); cursor: pointer; font-size: 0.85rem;
+      }
+      button:hover { background: #f0f0f0; }
+      button.danger { color: #c33; border-color: #c33; }
+      button:disabled { opacity: 0.4; cursor: not-allowed; }
+      .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; }
+      .modal.hidden { display: none; }
+      .modal-content { background: var(--card); border-radius: 10px; padding: 20px; width: 480px; max-height: 85vh; overflow-y: auto; }
+      .field { margin-bottom: 12px; }
+      .field label { display: block; font-size: 0.85rem; margin-bottom: 4px; color: var(--muted); }
+      .field input, .field select, .field textarea {
+        width: 100%; box-sizing: border-box; padding: 7px 9px;
+        border: 1px solid var(--border); border-radius: 6px; background: var(--card);
+        font-size: 0.9rem; color: inherit;
+      }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">加载中…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build bundle (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: webdesk-windows.zip
+          - os: macos-latest
+            artifact: webdesk-macos.dmg
+          - os: ubuntu-latest
+            artifact: webdesk-linux.deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Linux deps (WebKitGTK)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend deps
+        working-directory: src-frontend
+        run: npm ci
+
+      - name: Build bundle
+        run: cargo tauri build --ci
+
+      # 收集产物（各平台输出目录不同）
+      - name: Collect Windows artifacts
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp -r src-tauri/target/release/*.exe src-tauri/target/release/*.msi dist/ 2>/dev/null || true
+          ls -la dist/
+
+      - name: Collect macOS artifacts
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist
+          cp -r src-tauri/target/release/bundle/dmg/*.dmg dist/ 2>/dev/null || true
+          cp -r src-tauri/target/release/bundle/macos/*.app dist/ 2>/dev/null || true
+          ls -la dist/
+
+      - name: Collect Linux artifacts
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp -r src-tauri/target/release/bundle/deb/*.deb dist/ 2>/dev/null || true
+          cp -r src-tauri/target/release/bundle/appimage/*.AppImage dist/ 2>/dev/null || true
+          ls -la dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+          generate_release_notes: true

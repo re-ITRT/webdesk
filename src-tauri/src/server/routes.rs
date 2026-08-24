@@ -1,0 +1,456 @@
+//! WebDesk server 模块 —— HTTP 路由与端点实现
+//!
+//! 基于 axum 的本地 REST API。所有 `/api/*` 需 Bearer token。
+//! 静态托管管理控制台（`src-frontend/dist`）。
+
+use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
+
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde_json::Value;
+use tauri::Manager;
+use tower_http::cors::CorsLayer;
+
+use crate::store::AppStore;
+use crate::types::{ApiConfig, ApiError, App, AppStatus, IdentitySummary, PlatformStatus};
+
+/// 共享应用状态
+pub struct AppState {
+    pub store: AppStore,
+    pub token: String,
+    pub started_at: std::time::Instant,
+    pub running: RwLock<Vec<String>>,    // 运行中的应用 id
+    pub background: RwLock<Vec<String>>, // 后台驻留的应用 id
+    pub port: RwLock<u16>,
+}
+
+pub type SharedState = Arc<AppState>;
+
+/// 启动 HTTP 服务（后台任务）
+pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
+    // 配置目录
+    let base_dir = tauri_handle
+        .path()
+        .app_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("WebDesk"));
+    let store = AppStore::new(&base_dir)?;
+
+    let token = crate::server::generate_token();
+    let state = Arc::new(AppState {
+        store,
+        token,
+        started_at: std::time::Instant::now(),
+        running: RwLock::new(vec![]),
+        background: RwLock::new(vec![]),
+        port: RwLock::new(0),
+    });
+
+    let app = build_router(state.clone());
+    // 随机端口（0 = 系统分配）
+    let addr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let port = listener.local_addr()?.port();
+    *state.port.write().unwrap() = port;
+
+    // 写入 ApiConfig 供 Tauri IPC 读取
+    let cfg = ApiConfig {
+        port,
+        token: state.token.clone(),
+    };
+    crate::server::set_api_config(cfg);
+
+    log::info!("管理 API 已启动: http://127.0.0.1:{port}");
+
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// 构建路由
+fn build_router(state: SharedState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(HeaderValue::from_static("http://localhost:1420"))
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+        ]);
+
+    Router::new()
+        .route("/api/health", get(health))
+        .route("/api/status", get(status))
+        .route("/api/apps", get(list_apps).post(create_app))
+        .route(
+            "/api/apps/{id}",
+            get(get_app).put(update_app).delete(delete_app),
+        )
+        .route("/api/apps/{id}/restore", post(restore_app))
+        .route("/api/apps/{id}/launch", post(launch_app))
+        .route("/api/apps/{id}/activate", post(activate_app))
+        .route("/api/apps/{id}/terminate", post(terminate_app))
+        .route("/api/apps/{id}/status", get(app_status))
+        .route("/api/apps/{id}/identity", get(identity_summary))
+        .route(
+            "/api/apps/{id}/shortcut",
+            post(create_shortcut).delete(remove_shortcut),
+        )
+        .layer(cors)
+        .with_state(state)
+}
+
+// ---------- 鉴权中间件 ----------
+
+/// 检查 Bearer token
+fn check_token(state: &SharedState, headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| ApiError::new("unauthorized", "缺少鉴权 token"))?;
+    if token == state.token {
+        Ok(())
+    } else {
+        Err(ApiError::new("unauthorized", "token 无效"))
+    }
+}
+
+/// 从状态取应用（不存在返回 404）
+fn get_app_or_404(state: &SharedState, id: &str) -> Result<App, ApiError> {
+    state
+        .store
+        .get(id)
+        .map_err(|e| ApiError::new("internal", format!("读取应用失败: {e}")))?
+        .ok_or_else(|| ApiError::new("not_found", "应用不存在"))
+}
+
+// ---------- 端点实现 ----------
+
+async fn health(State(state): State<SharedState>, headers: axum::http::HeaderMap) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let os = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "platform": os,
+        "pid": std::process::id(),
+    }))
+    .into_response()
+}
+
+async fn status(State(state): State<SharedState>, headers: axum::http::HeaderMap) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let running = state.running.read().unwrap().clone();
+    let background = state.background.read().unwrap().clone();
+    let uptime = state.started_at.elapsed().as_secs();
+    let port = *state.port.read().unwrap();
+    let ps = PlatformStatus {
+        running,
+        background,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        uptime_sec: uptime,
+        memory_kb: 0,
+        port,
+    };
+    Json(ps).into_response()
+}
+
+async fn list_apps(State(state): State<SharedState>, headers: axum::http::HeaderMap) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    match state.store.list() {
+        Ok(apps) => Json(apps).into_response(),
+        Err(e) => err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::new("internal", format!("读取应用列表失败: {e}")),
+        ),
+    }
+}
+
+async fn create_app(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    Json(app): Json<App>,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    match state.store.create(app) {
+        Ok(app) => (StatusCode::CREATED, Json(app)).into_response(),
+        Err(e) => err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::new("internal", format!("创建应用失败: {e}")),
+        ),
+    }
+}
+
+async fn get_app(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    match get_app_or_404(&state, &id) {
+        Ok(app) => Json(app).into_response(),
+        Err(e) => err_response(StatusCode::NOT_FOUND, e),
+    }
+}
+
+async fn update_app(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(patch): Json<App>,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    match state.store.update(&id, patch) {
+        Ok(Some(app)) => Json(app).into_response(),
+        Ok(None) => err_response(
+            StatusCode::NOT_FOUND,
+            ApiError::new("not_found", "应用不存在"),
+        ),
+        Err(e) => err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::new("internal", format!("更新应用失败: {e}")),
+        ),
+    }
+}
+
+async fn delete_app(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let app = match get_app_or_404(&state, &id) {
+        Ok(app) => app,
+        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
+    };
+    if app.is_system {
+        return err_response(
+            StatusCode::BAD_REQUEST,
+            ApiError::new("cannot_delete_system_app", "系统应用不可删除"),
+        );
+    }
+    match state.store.delete(&id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        _ => err_response(
+            StatusCode::NOT_FOUND,
+            ApiError::new("not_found", "应用不存在"),
+        ),
+    }
+}
+
+async fn restore_app(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    // 系统应用恢复：管理控制台（is_system）若缺失则重建
+    let apps = match state.store.list() {
+        Ok(a) => a,
+        Err(e) => {
+            return err_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiError::new("internal", format!("读取应用失败: {e}")),
+            )
+        }
+    };
+    // 简化：M1 起实现精确恢复逻辑（按 id / 类型）
+    if apps.iter().any(|a| a.id == id) {
+        let app = get_app_or_404(&state, &id).unwrap();
+        Json(app).into_response()
+    } else {
+        err_response(
+            StatusCode::NOT_FOUND,
+            ApiError::new("not_found", "应用不存在"),
+        )
+    }
+}
+
+async fn launch_app(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let app = match get_app_or_404(&state, &id) {
+        Ok(a) => a,
+        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
+    };
+    // M1 起调用 scheduler 真启动 WebView；M0 标记为 running
+    let mut running = state.running.write().unwrap();
+    if !running.contains(&id) {
+        running.push(id.clone());
+    }
+    let mut background = state.background.write().unwrap();
+    background.retain(|x| x != &id);
+    drop(background);
+    drop(running);
+    log::info!("启动应用: {} ({})", app.name, app.url);
+    Json(serde_json::json!({"status": "running", "windowId": format!("win-{id}")})).into_response()
+}
+
+async fn activate_app(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let _app = match get_app_or_404(&state, &id) {
+        Ok(a) => a,
+        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
+    };
+    Json(serde_json::json!({"status": "active"})).into_response()
+}
+
+async fn terminate_app(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let _app = match get_app_or_404(&state, &id) {
+        Ok(a) => a,
+        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
+    };
+    let mut running = state.running.write().unwrap();
+    let was_running = running.iter().any(|x| x == &id);
+    running.retain(|x| x != &id);
+    drop(running);
+    let mut background = state.background.write().unwrap();
+    background.retain(|x| x != &id);
+    drop(background);
+    if was_running {
+        log::info!("终止应用: {id}");
+        Json(serde_json::json!({"status": "terminated"})).into_response()
+    } else {
+        Json(serde_json::json!({"status": "not_running"})).into_response()
+    }
+}
+
+async fn app_status(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let _app = match get_app_or_404(&state, &id) {
+        Ok(a) => a,
+        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
+    };
+    let running = state.running.read().unwrap().contains(&id);
+    let background = state.background.read().unwrap().contains(&id);
+    let st = if running {
+        "running"
+    } else if background {
+        "background"
+    } else {
+        "stopped"
+    };
+    Json(AppStatus {
+        id,
+        status: st.into(),
+        window_id: None,
+        memory_kb: None,
+        started_at: None,
+    })
+    .into_response()
+}
+
+async fn identity_summary(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let app = match get_app_or_404(&state, &id) {
+        Ok(a) => a,
+        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
+    };
+    Json(IdentitySummary {
+        cookie_count: 0, // M1 起统计
+        extensions: app.extensions,
+        has_secrets: false,
+    })
+    .into_response()
+}
+
+async fn create_shortcut(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let _app = match get_app_or_404(&state, &id) {
+        Ok(a) => a,
+        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
+    };
+    // M1 起调用 platform 建 .lnk；M0 占位
+    Json(serde_json::json!({"created": true, "path": ""})).into_response()
+}
+
+async fn remove_shortcut(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(e) = check_token(&state, &headers) {
+        return err_response(StatusCode::UNAUTHORIZED, e);
+    }
+    let _app = match get_app_or_404(&state, &id) {
+        Ok(a) => a,
+        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
+    };
+    Json(serde_json::json!({"removed": true})).into_response()
+}
+
+// ---------- 辅助 ----------
+
+fn err_response(code: StatusCode, err: ApiError) -> Response {
+    (code, Json(err)).into_response()
+}
+
+#[allow(dead_code)]
+fn _query_param(_q: Option<Query<Value>>) -> Value {
+    Value::Null
+}
