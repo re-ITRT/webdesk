@@ -16,9 +16,9 @@ use tauri::Manager;
 use tower_http::cors::CorsLayer;
 
 use crate::store::AppStore;
-use crate::types::{ApiConfig, ApiError, App, AppStatus, IdentitySummary, PlatformStatus};
+use crate::types::{ApiConfig, ApiError, App, AppStatus, PlatformStatus};
 
-/// 共享应用状态
+/// 共享应用状态（axum 侧）
 pub struct AppState {
     pub store: AppStore,
     pub token: String,
@@ -26,6 +26,8 @@ pub struct AppState {
     pub running: RwLock<Vec<String>>,    // 运行中的应用 id
     pub background: RwLock<Vec<String>>, // 后台驻留的应用 id
     pub port: RwLock<u16>,
+    /// Tauri 句柄（经它访问全局 AppState：scheduler / identity / hooks）
+    pub app_handle: tauri::AppHandle,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -47,6 +49,7 @@ pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
         running: RwLock::new(vec![]),
         background: RwLock::new(vec![]),
         port: RwLock::new(0),
+        app_handle: tauri_handle.clone(),
     });
 
     let app = build_router(state.clone());
@@ -62,6 +65,22 @@ pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
         token: state.token.clone(),
     };
     crate::server::set_api_config(cfg);
+
+    // 把预置系统应用"WebDesk 控制台"的 URL 更新为真实端口
+    // （app_state::ensure_system_apps 预置时用 127.0.0.1:0 占位）
+    let console_url = format!("http://127.0.0.1:{port}");
+    match state.store.get("console") {
+        Ok(Some(console_app)) if console_app.is_system => {
+            let mut patch = console_app.clone();
+            patch.url = console_url.clone();
+            match state.store.update("console", patch) {
+                Ok(_) => log::info!("控制台系统应用 URL 已更新: {console_url}"),
+                Err(e) => log::warn!("更新控制台 URL 失败: {e}"),
+            }
+        }
+        Ok(_) => log::warn!("未找到控制台系统应用（console），跳过 URL 更新"),
+        Err(e) => log::warn!("读取控制台应用失败: {e}"),
+    }
 
     log::info!("管理 API 已启动: http://127.0.0.1:{port}");
 
@@ -303,21 +322,17 @@ async fn launch_app(
     if let Err(e) = check_token(&state, &headers) {
         return err_response(StatusCode::UNAUTHORIZED, e);
     }
-    let app = match get_app_or_404(&state, &id) {
-        Ok(a) => a,
-        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
-    };
-    // M1 起调用 scheduler 真启动 WebView；M0 标记为 running
-    let mut running = state.running.write().unwrap();
-    if !running.contains(&id) {
-        running.push(id.clone());
+    // 经 app_handle 调用真实 scheduler（创建 WebviewWindow + 钩子 + 驻留）
+    match crate::scheduler::launch_by_id(&state.app_handle, &id).await {
+        Ok(label) => {
+            log::info!("[api] 启动应用: {id} → {label}");
+            Json(serde_json::json!({"status": "running", "windowId": label})).into_response()
+        }
+        Err(e) => err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::new("internal", format!("启动应用失败: {e}")),
+        ),
     }
-    let mut background = state.background.write().unwrap();
-    background.retain(|x| x != &id);
-    drop(background);
-    drop(running);
-    log::info!("启动应用: {} ({})", app.name, app.url);
-    Json(serde_json::json!({"status": "running", "windowId": format!("win-{id}")})).into_response()
 }
 
 async fn activate_app(
@@ -347,18 +362,13 @@ async fn terminate_app(
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
     };
-    let mut running = state.running.write().unwrap();
-    let was_running = running.iter().any(|x| x == &id);
-    running.retain(|x| x != &id);
-    drop(running);
-    let mut background = state.background.write().unwrap();
-    background.retain(|x| x != &id);
-    drop(background);
-    if was_running {
-        log::info!("终止应用: {id}");
-        Json(serde_json::json!({"status": "terminated"})).into_response()
-    } else {
-        Json(serde_json::json!({"status": "not_running"})).into_response()
+    // 经 app_handle 调用真实 scheduler 终止
+    match crate::scheduler::terminate_app(&state.app_handle, &id) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::new("internal", format!("终止应用失败: {e}")),
+        ),
     }
 }
 
@@ -405,12 +415,9 @@ async fn identity_summary(
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
     };
-    Json(IdentitySummary {
-        cookie_count: 0, // M1 起统计
-        extensions: app.extensions,
-        has_secrets: false,
-    })
-    .into_response()
+    // 用真实 identity 模块统计（per-app cookie/扩展/密钥）
+    let im = crate::identity::IdentityManager::new();
+    Json(im.summary(&app)).into_response()
 }
 
 async fn create_shortcut(

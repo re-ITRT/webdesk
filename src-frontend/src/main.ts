@@ -53,15 +53,17 @@ function renderGrid(apps: App[], status: PlatformStatus): void {
     const running = status.running.includes(app.id);
     const background = status.background.includes(app.id);
     const stateLabel = running ? "运行中" : background ? "后台" : "已停止";
+    const favicon = faviconUrl(app.url);
 
     const card = h("div", { class: `card ${app.isSystem ? "system" : ""}` }, [
       h("div", { class: "card-header" }, [
+        h("img", { class: "app-icon", src: favicon, alt: "", loading: "lazy" }),
         h("strong", {}, [app.name]),
         h("span", { class: `badge ${stateLabel}` }, [stateLabel]),
         app.isSystem ? h("span", { class: "badge system" }, ["系统"]) : h("span", {}),
       ]),
       h("div", { class: "card-body" }, [
-        h("div", {}, [`${app.url}`]),
+        h("div", { class: "app-url" }, [`${app.url}`]),
         h("div", { class: "muted" }, [`引擎 ${app.runtimeProfile} · 关窗 ${app.closeAction === "background" ? "驻留" : "退出"}`]),
       ]),
       h("div", { class: "card-actions" }, [
@@ -76,6 +78,16 @@ function renderGrid(apps: App[], status: PlatformStatus): void {
   grid.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((btn) => {
     btn.onclick = () => handleAction(btn.dataset.act!, btn.dataset.id!);
   });
+}
+
+/** 从应用 URL 提取 favicon 地址（Google favicon 服务，无后端依赖） */
+function faviconUrl(url: string): string {
+  try {
+    const host = new URL(url).hostname;
+    return `https://www.google.com/s2/favicons?domain=${host}&sz=32`;
+  } catch {
+    return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='%23888' rx='6'/><text x='16' y='22' text-anchor='middle' font-size='16' fill='white'>W</text></svg>";
+  }
 }
 
 async function handleAction(act: string, id: string): Promise<void> {
