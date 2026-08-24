@@ -16,7 +16,7 @@
 | 层 | 选型 |
 |---|---|
 | 语言/运行时 | C# / .NET 8 |
-| 桌面 UI | WPF（管理面板）|
+| 管理界面 | 内置 Web 控制台（HTML/CSS/JS，本地 HTTP 托管，作为首个默认 Web 应用）|
 | 模式 B 内核 | WebView2（Evergreen，per-app 可切 Fixed Version）|
 | 进程/生命周期 | 命名互斥体 + 命名管道 IPC + Job Object 进程树回收 |
 | 配置 | JSON（`%APPDATA%\WebDesk\config\`）|
