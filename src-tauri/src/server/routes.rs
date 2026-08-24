@@ -93,18 +93,18 @@ pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
 
 /// 构建路由
 fn build_router(state: SharedState) -> Router {
+    // CORS：允许任意来源（本地回环 API）。真正的安全边界是 Bearer token，
+    // 不是 CORS——打包后 Tauri WebView 的 origin 是 tauri://localhost / http://tauri.localhost，
+    // 开发时是 localhost:1420，浏览器调试是任意端口。本地 API 无需 CORS 限制。
     let cors = CorsLayer::new()
-        .allow_origin(HeaderValue::from_static("http://localhost:1420"))
+        .allow_origin(tower_http::cors::Any)
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
             axum::http::Method::PUT,
             axum::http::Method::DELETE,
         ])
-        .allow_headers([
-            axum::http::header::AUTHORIZATION,
-            axum::http::header::CONTENT_TYPE,
-        ]);
+        .allow_headers(tower_http::cors::Any);
 
     Router::new()
         .route("/api/health", get(health))
