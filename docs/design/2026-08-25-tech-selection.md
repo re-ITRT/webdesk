@@ -15,7 +15,7 @@
 | **本地 HTTP（管理 API + 静态控制台）** | **ASP.NET Core Minimal API**（Kestrel，仅回环 + 随机端口 + 会话 token） |
 | **系统集成** | 原生 .NET：命名互斥体 / 命名管道 / Job Object(P/Invoke) / 注册表 / UAC / .lnk(COM) |
 | **单例 + IPC** | Named Mutex + NamedPipeServerStream |
-| **跨平台** | Windows 优先；macOS 后续 = 薄壳重写（Swift/AppKit + WKWebView），管理控制台（Web）零改动 |
+| **跨平台** | Windows 优先（WebView2 专属）；macOS/Linux 需换渲染宿主（见 §11 跨平台策略）；鸿蒙=独立项目 |
 
 **一句话**：C#/.NET 10 + WebView2 + WinForms 薄壳 + 内置 Web 控制台。
 
@@ -140,3 +140,50 @@ Tauri 2 已稳定、包体小、跨平台，但**与本项目核心需求错配*
 - WebView2 Fixed Version = 250MB+（微软官方分发文档）
 - .NET 8/9 EOL 2026-11-10，.NET 10 LTS → 2028-11（微软官方博客）
 - Tauri 2 稳定（2026），Windows 走系统 WebView2，单 webview 模型
+
+---
+
+## 11. 跨平台策略（渲染宿主抽象）
+
+### 事实：WebView2 是 Windows 专属
+
+| 平台 | Web 渲染引擎 | WebView2 支持 |
+|---|---|---|
+| Windows | WebView2（微软） | ✅ 原生 |
+| macOS | WKWebView（Apple WebKit） | ❌ |
+| Linux | WebKitGTK | ❌ |
+| 鸿蒙 HarmonyOS | ArkWeb（华为自研内核） | ❌（与 Chromium 家族无关） |
+
+### 但"看得见的部分"已经天然跨平台
+
+ADR-007 让管理界面 = Web 控制台，被管理的 Web 应用也是 Web。因此：
+
+- **管理控制台（Web）**：完全跨平台；
+- **被管理的 Web 应用**：完全跨平台；
+- **daemon 原生壳**（WinForms/.NET/WebView2）：Windows 专属。
+
+### 策略：渲染宿主抽象（`IWebViewHost`），为跨平台铺路不拖慢 Windows
+
+**daemon 核心逻辑（钩子 / 身份管理 / 生命周期 / 调度 / 单例 / IPC）不与 WebView2 强绑定**，仅通过一个宿主抽象接口触达渲染：
+
+```
+┌────────────────────────────────────────────┐
+│  daemon 核心（跨平台可移植）                 │
+│  · 生命周期 / 钩子 / 身份 / 调度 / IPC       │
+└──────────────┬─────────────────────────────┘
+               │ IWebViewHost（抽象接口）
+   ┌───────────┼───────────────┬──────────────┐
+   ▼           ▼               ▼              ▼
+ WebView2    WKWebView      WebKitGTK      ArkWeb(鸿蒙)
+ (Windows)   (macOS)        (Linux)        (独立项目)
+```
+
+- **Windows**：实现 = WebView2（当前）。
+- **macOS/Linux**：未来实现 = WKWebView / WebKitGTK（管理控制台零改动，只需移植 daemon 壳 + 宿主实现）。
+- **鸿蒙**：内核与 Chromium 无关，扩展/注入机制不通用——是独立项目（重写宿主 + 身份注入），非"同步"。
+
+### 落地约束
+
+- 抽象只覆盖**渲染宿主接口**，不抽象系统集成（托盘/注册表/Job Object/UAC 本就平台原生，各平台自实现）。
+- Windows 优先不妥协：接口设计以 WebView2 能力为准，避免为"未来可能"过度设计。
+- 身份注入（cookie/扩展）是宿主接口的一部分——跨平台时各宿主自实现，平台仓库统一。
