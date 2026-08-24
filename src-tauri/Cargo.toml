@@ -1,6 +1,6 @@
 [package]
 name = "webdesk"
-version = "0.1.0"
+version = "0.2.0"
 description = "WebDesk — 通用 Web 应用桌面化管理平台（四平台：Windows/macOS/Linux/鸿蒙）"
 authors = ["re-ITRT"]
 license = "MIT"
