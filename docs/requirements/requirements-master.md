@@ -51,13 +51,14 @@
 | `url` | string | ✅ | 应用地址 |
 | `renderEngine` | `"system"` \| `"embedded"` | ✅ | 模式 A / B |
 | `runtimeProfile` | `"evergreen"` \| `"fixed"` | ✅ | 模式 B 时生效（默认 evergreen） |
-| `chromeProfile` | `"shared"` \| `"independent"` | ⚠️ O1 | 模式 A 的 profile 策略 |
+| `chromeProfile` | `"independent"`（默认）\| `"shared"`（opt-in） | ✅ ADR-009 | 模式 A 的 profile 策略（独立为主，共享为兼容 opt-in） |
 | `closeAction` | `"background"` \| `"quit"` | ⚠️ O2 | 关窗行为 |
 | `hooks` | `{ preLaunch[], postExit[] }` | ⚠️ O3 | 钩子命令列表 |
 | `hookOptions` | shell / timeout / blocking | ⚠️ O3 | 每个事件的钩子选项 |
 | `uiControls` | 地址栏/导航/刷新… | ✅ | 仅模式 B 完整生效 |
 | `injections` | CSS / JS + 时机 | ⚠️ O4 | 仅模式 B |
 | `extensions` | 扩展标识列表 | ⚠️ O5 | 仅模式 B |
+| `appIdentity` | 身份容器（cookie / secrets / extensions）| ✅ ADR-009 | 按应用隔离、跨内核一致；模式 A 独立 profile 亦承载 |
 | `launchOnBoot` | bool | ⚠️ O10 | 开机自启（平台级或应用级） |
 | `isSystem` | bool | ✅ | 系统应用标记（管理控制台） |
 | `tags` | string[] | ⚠️ O11 | 分组/标签（P2） |
@@ -76,9 +77,10 @@
 | Chrome 探测 | ✅ | 注册表（HKLM/HKCU/WOW6432Node）+ App Paths 双保险 + 版本号 |
 | 探测失败引导 | ✅ | 清晰提示，引导切模式 B |
 | 启动 | ✅ | `chrome --app=<url>` 独立窗口 |
-| 轻控制范围 | ✅ | 启动 / 按标题定位激活 / 终止（仅独立 profile）/ 钩子 |
-| 共享 profile | ✅ | 关闭即退出、不深度控制、终止受限（见 ADR-002） |
-| 独立 profile | ⚠️ O1 | 可后台驻留 / 可终止 / 登录态隔离 |
+| 独立 profile（默认） | ✅ ADR-009 | `--user-data-dir=<appDir>`；应用级 cookie 隔离与跨内核共享、按应用扩展、可后台驻留、可终止 |
+| 共享 profile（opt-in） | ✅ ADR-009 | 复用系统 Chrome 登录态；不隔离、不注入、关闭即退出（回到原 2.1.1 轻控制） |
+| 扩展加载 | ✅ ADR-009 | `--load-extension=<dirs>` |
+| 深控（CDP） | ✅ 排除 | 运行时 JS 注入 / DOM 操作 / 隐藏导航 = 模式 B 专属，模式 A 不开放 CDP |
 
 **模式 B（WebView2）**
 | 项 | 状态 | 说明 |
@@ -235,39 +237,41 @@
 |---|---|---|
 | ADR-001 | 双模引擎 per-app，非全局开关 | V1.1 |
 | ADR-002 | 模式 A = 轻控制（深定制仅模式 B） | V1.2 |
+| ADR-002（修订）| 模式 A = profile 级控制：默认独立 profile，应用级身份隔离+跨内核一致；仍不开放 CDP | V1.4 / ADR-009 |
 | ADR-003 | 模式 B 内核 = WebView2（Evergreen/Fixed） | V1.2 |
 | ADR-004 | 后台驻留按模式分机制（B 隐藏 / A 退出） | V1.2 |
 | ADR-005 | 后台服务层 = 常驻进程，非 Windows Service | V1.2 |
 | ADR-006 | 进程回收 = Job Object | V1.2 |
 | ADR-007 | 管理界面 = Web 控制台，且为平台首个默认应用 | V1.3 |
 | ADR-008 | 技术栈 = C#/.NET 8（备选 Tauri） | V1.2 |
+| ADR-009 | 应用身份（AppIdentity）：cookie / 密钥 / 插件按应用隔离并跨内核一致；模式 A 默认独立 profile | V1.4 |
 
 ---
 
-## 5. 待定事项清单（Open Questions）—— 需用户拍板
+## 5. 决策记录（原待定事项 O1–O18，均已敲定）
 
-| # | 问题 | 选项 | 建议 | 优先级 |
-|---|---|---|---|---|
-| O1 | **模式 A 的 profile 策略** | 仅共享 / 仅独立 / 两者 per-app | **两者 per-app，默认共享**（保留复用登录态卖点；需要隔离/驻留/终止的应用可开独立 profile） | **P0** |
-| O2 | 每个应用的**关窗行为**是否可配 | 固定驻留 / 固定退出 / per-app 可配 | per-app 可配，默认驻留 | P1 |
-| O3 | 钩子是否支持**多条命令**顺序执行 + 失败策略 | 单条 / 多条+失败即中止 / 多条+忽略继续 | 多条，失败策略可配（默认中止） | P1 |
-| O4 | 注入脚本**执行时机** | 仅 DOM 就绪 / 支持 document_start | 支持 document_start 与 DOM 就绪两档 | P1 |
-| O5 | 扩展**来源** | 本地 unpacked / Chrome Web Store / 两者 | 先本地 unpacked，Web Store 后置 | P1 |
-| O6 | 应用**图标**来源 | 仅 favicon 自动 / 自动+手动上传 | 自动抓 favicon + 手动上传 | P1 |
-| O7 | 管理 API 是否支持 **LAN 远程**（opt-in） | 本期做 / 不做 | **本期不做**，仅回环；未来 opt-in 需 HTTPS+认证 | P2 |
-| O8 | 控制台**语言** | 仅中文 / 中文+预留 i18n | 中文优先，预留 i18n | P1 |
-| O9 | **WebDesk 自身更新**机制 | GitHub Releases 自动检查 / 手动更新 / 本期不做 | 建议 GitHub Releases 自动检查+提示 | P2 |
-| O10 | **开机自启** | 平台默认自启 / 安装时可选 / 应用级自启 | 安装时可选；平台默认常驻托盘 | P1 |
-| O11 | 应用**分组/标签** | 本期做 / 预留 tags | 预留 tags 字段，UI 后置 | P2 |
-| O12 | **系统通知**桥接（Web 应用发通知） | 跟随 WebView2 默认 / 平台接管 | 跟随 WebView2，平台提供开关 | P1 |
-| O13 | 下载 / 打印等 WebView2 能力 | 默认行为 / 平台接管 | 默认行为，平台仅记录 | P2 |
-| O14 | 控制台**性能监控**展示（内存/CPU） | 做 / 不做 | P2（MVP 后） | P2 |
-| O15 | **卸载清理** | 提供清理配置/日志/profile 选项 | 提供 | P1 |
-| O16 | **网络代理** | 跟随系统 / per-app 可配 | 跟随系统，per-app 后置 | P2 |
-| O17 | **UAC 提权**：钩子需管理员 | per-app 标记+启动时提升 | 提供 per-app “需要管理员”标记 | P1 |
-| O18 | **配置损坏容错** | 自动备份 / 仅提示 | 自动备份（保留最近 N 份） | P1 |
+> O1–O18 已全部定案。O1 由用户新增的"应用级身份"需求拍板；O2–O18 采纳默认建议。详细论述见 `docs/design/2026-08-25-app-identity-across-engines.md`。
 
-> O1 是唯一 P0 项——它决定模式 A 的控制能力边界，牵动 2.4 后台驻留与“复用登录态”卖点。
+| # | 决策 | 结论（已定） | 优先级 |
+|---|---|---|---|
+| O1 | 模式 A profile 策略 | **独立 profile 为默认**，共享 profile 为显式 opt-in（复用登录态场景）；身份跨内核一致 | **P0** ✅ |
+| O2 | 关窗行为 | per-app 可配，默认驻留 | P1 |
+| O3 | 钩子多条命令 | 支持多条顺序执行；失败策略可配（默认中止） | P1 |
+| O4 | 注入执行时机 | document_start 与 DOM 就绪两档 | P1 |
+| O5 | 扩展来源 | 先本地 unpacked；Web Store 后置 | P1 |
+| O6 | 应用图标 | 自动抓 favicon + 手动上传 | P1 |
+| O7 | LAN 远程管理 | **本期不做**，仅回环；未来 opt-in 需 HTTPS+认证 | P2 |
+| O8 | 控制台语言 | 中文优先，预留 i18n | P1 |
+| O9 | 自身更新 | GitHub Releases 自动检查+提示 | P2 |
+| O10 | 开机自启 | 安装时可选；平台默认常驻托盘 | P1 |
+| O11 | 分组/标签 | 预留 tags 字段，UI 后置 | P2 |
+| O12 | 系统通知 | 跟随 WebView2 默认，平台提供开关 | P1 |
+| O13 | 下载/打印 | 默认行为，平台仅记录 | P2 |
+| O14 | 性能监控 | MVP 后置 | P2 |
+| O15 | 卸载清理 | 提供清理配置/日志/profile 选项 | P1 |
+| O16 | 网络代理 | 跟随系统；per-app 后置 | P2 |
+| O17 | UAC 提权 | per-app “需要管理员”标记，启动时提升 | P1 |
+| O18 | 配置损坏容错 | 自动备份（保留最近 N 份） | P1 |
 
 ---
 
@@ -276,5 +280,5 @@
 | 里程碑 | 内容 | 目标 |
 |---|---|---|
 | **M0 原型闭环** | daemon（HTTP + 调度 + 单例 + 托盘）+ 静态控制台页（CRUD）+ 模式 B 承载窗口 | 验证：内存 <50MB、启动延迟、控制台吃自己狗粮 |
-| **M1 MVP** | 双模引擎 + 生命周期钩子 + 后台驻留 + 桌面快捷方式 + 单例调度完整 | 核心产品可用 |
-| **M2 完整版** | 注入 / 扩展隔离 / Fixed Version / 自身更新 / 多语言 / 性能监控 | 对标 WebCatalog 完整功能 |
+| **M1 MVP** | 双模引擎 + 生命周期钩子 + 后台驻留 + 桌面快捷方式 + 单例调度 + **应用级身份（cookie/密钥/扩展）** | 核心产品可用；身份按应用隔离、跨内核一致 |
+| **M2 完整版** | 模式 A↔B cookie 自动同步 / 模式 A 密钥注入（Bridge 扩展）/ Fixed Version / 自身更新 / 多语言 / 性能监控 | 对标 WebCatalog 完整功能 |
