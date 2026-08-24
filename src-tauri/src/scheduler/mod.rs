@@ -67,6 +67,11 @@ fn window_label(id: &str) -> String {
 }
 
 /// 启动应用：若已运行则激活，否则创建独立 WebviewWindow 并执行钩子。
+///
+/// 重要：窗口创建必须发生在 Tauri 主线程 runtime。若本函数被 axum 的
+/// tokio runtime 调用（POST /api/.../launch），直接在这里 `build()` 会死锁
+/// （Tauri 等待主线程，主线程等待 HTTP 响应）。因此把创建派发到
+/// `tauri::async_runtime::spawn`，立即返回窗口 label。
 pub async fn launch_by_id(handle: &AppHandle, id: &str) -> anyhow::Result<String> {
     let state = handle.state::<AppState>();
 
@@ -78,13 +83,31 @@ pub async fn launch_by_id(handle: &AppHandle, id: &str) -> anyhow::Result<String
 
     let label = window_label(id);
 
-    // 已运行 → 激活
+    // 已运行 → 激活（激活是主线程安全的，直接做）
     if let Some(win) = handle.get_webview_window(&label) {
         let _ = win.show();
         let _ = win.set_focus();
         log::info!("[scheduler] 应用已运行，激活窗口: {label}");
         return Ok(label);
     }
+
+    // 派发窗口创建到 Tauri runtime（避免跨 runtime 死锁）
+    let handle_clone = handle.clone();
+    let app_clone = app.clone();
+    let label_clone = label.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = spawn_window(&handle_clone, &app_clone, &label_clone).await {
+            log::error!("[scheduler] 创建窗口失败 {label_clone}: {e}");
+        }
+    });
+
+    log::info!("[scheduler] 已派发窗口创建: {label} (url={})", app.url);
+    Ok(label)
+}
+
+/// 实际创建窗口（在 Tauri runtime 中执行）
+async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Result<()> {
+    let state = handle.state::<AppState>();
 
     // 执行 pre_launch 钩子
     let _hook_results = hooks::run_pre_launch(&app.hooks, &app.hook_options);
@@ -99,7 +122,7 @@ pub async fn launch_by_id(handle: &AppHandle, id: &str) -> anyhow::Result<String
     let app_id = app.id.clone();
     let app_name = app.name.clone();
 
-    let window = WebviewWindowBuilder::new(handle, &label, WebviewUrl::External(url))
+    let window = WebviewWindowBuilder::new(handle, label, WebviewUrl::External(url))
         .title(&app_name)
         .inner_size(1024.0, 720.0)
         .visible(true)
@@ -107,13 +130,13 @@ pub async fn launch_by_id(handle: &AppHandle, id: &str) -> anyhow::Result<String
         .map_err(|e| anyhow::anyhow!("创建窗口失败: {e}"))?;
 
     // 注入 CSS / JS
-    inject_webview(&window, &app);
+    inject_webview(&window, app);
 
     // close_action 处理：background=关窗隐藏驻留；quit=直接关闭（默认行为）
     if close_action == "background" {
         let app_id_for_hide = app_id.clone();
         let state_handle = handle.clone();
-        let label_for_hide = label.clone();
+        let label_for_hide = label.to_string();
         window.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // 驻留：阻止真正关闭，隐藏窗口，标记为 background
@@ -129,10 +152,10 @@ pub async fn launch_by_id(handle: &AppHandle, id: &str) -> anyhow::Result<String
     }
 
     // 标记运行
-    state.mark_running(&app_id, &label, "running");
+    state.mark_running(&app_id, label, "running");
 
     log::info!("[scheduler] 已创建窗口: {label} (url={})", app.url);
-    Ok(label)
+    Ok(())
 }
 
 /// 向窗口注入用户配置的 CSS / JS

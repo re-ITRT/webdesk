@@ -14,6 +14,7 @@
 //! `docs/design/dev-paradigm.md`，接口契约见 `docs/design/api-contract.md`。
 
 mod app_state;
+pub mod cli;
 mod hooks;
 mod identity;
 mod platform;
@@ -22,6 +23,8 @@ mod server;
 mod store;
 mod types;
 mod util;
+
+pub use cli::run_cli;
 
 use app_state::AppState;
 use tauri::Manager;

@@ -1,7 +1,11 @@
-//! WebDesk CLI —— 与 Web 管理控制台功能对等的命令行界面
+//! WebDesk 单二进制 CLI/daemon —— CLI 模式核心逻辑
 //!
-//! 独立轻量二进制，通过本地 HTTP 管理 API 与 daemon 通信。
-//! 命令体系见 `docs/design/cli-commands.md`。
+//! 同一个 exe 既是 CLI 又是 daemon（服务器）：
+//! - 无参数 / --hidden → daemon 模式（webdesk_lib::run()）
+//! - addweb / app ... / status 等 → CLI 模式（本模块）
+//!
+//! CLI 模式：若 daemon 未运行，自动以 --hidden 重启自身作为 daemon，
+//! 再通过本地 HTTP 管理 API 通信。
 
 use std::process::Command;
 
@@ -13,7 +17,7 @@ use serde_json::Value;
 #[command(
     name = "webdesk",
     version,
-    about = "WebDesk 通用 Web 应用桌面化管理平台 CLI"
+    about = "WebDesk 通用 Web 应用桌面化管理平台（CLI + daemon 合一）"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -78,9 +82,9 @@ enum AppCommands {
     Shortcut { id: String },
 }
 
-fn main() {
+/// CLI 入口（main.rs 检测到 CLI 参数时调用）
+pub fn run_cli() -> i32 {
     // 兼容用户习惯的多字符短选项：-url xxx / -name xxx / -hook xxx / -hook_exit xxx
-    // clap 只支持单字符短选项，这里把常见多字符"短选项"改写成 --long 形式
     let args: Vec<String> = std::env::args()
         .map(|a| match a.as_str() {
             "-url" => "--url".to_string(),
@@ -94,7 +98,15 @@ fn main() {
         })
         .collect();
 
-    let cli = Cli::parse_from(args);
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(c) => c,
+        Err(e) => {
+            // 参数错误时显示帮助并退出
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+
     let result = match &cli.command {
         Commands::Add {
             name,
@@ -127,20 +139,20 @@ fn main() {
         Commands::Console => cmd_console(),
         Commands::Version => cmd_version(),
     };
-    if let Err(e) = result {
-        eprintln!("错误: {e}");
-        std::process::exit(1);
+
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("错误: {e}");
+            1
+        }
     }
 }
 
 // ---------- daemon 发现 ----------
 
-/// 读取 daemon API 配置（port + token）
 fn load_api_config() -> Option<(u16, String)> {
-    let path = dirs::data_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("WebDesk")
-        .join("api.json");
+    let path = daemon_api_path();
     let content = std::fs::read_to_string(path).ok()?;
     let v: Value = serde_json::from_str(&content).ok()?;
     Some((
@@ -149,18 +161,21 @@ fn load_api_config() -> Option<(u16, String)> {
     ))
 }
 
-/// 确保 daemon 在运行（未运行则拉起），返回 (port, token)
+fn daemon_api_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("WebDesk")
+        .join("api.json")
+}
+
 fn ensure_daemon() -> Result<(u16, String), String> {
     if let Some(cfg) = load_api_config() {
-        // 健康检查：daemon 是否真的活着
         if ping_daemon(cfg.0, &cfg.1) {
             return Ok(cfg);
         }
     }
-    // daemon 未运行 → 拉起
     eprintln!("WebDesk daemon 未运行，正在启动…");
     spawn_daemon()?;
-    // 等待健康检查（最多 ~5s）
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
         if let Some(cfg) = load_api_config() {
@@ -172,7 +187,6 @@ fn ensure_daemon() -> Result<(u16, String), String> {
     Err("daemon 启动超时".into())
 }
 
-/// ping daemon 健康检查
 fn ping_daemon(port: u16, token: &str) -> bool {
     let client = reqwest::blocking::Client::new();
     client
@@ -184,16 +198,10 @@ fn ping_daemon(port: u16, token: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 拉起 daemon（后台运行，隐藏窗口）
+/// 以 --hidden 重启自身作为 daemon（单二进制自举）
 fn spawn_daemon() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    // CLI 旁可能没有 daemon；找 WebDesk.exe
-    let daemon_path = exe
-        .parent()
-        .map(|p| p.join("WebDesk.exe"))
-        .filter(|p| p.exists())
-        .ok_or_else(|| "找不到 WebDesk.exe（请先启动 WebDesk 桌面应用）".to_string())?;
-    let child = Command::new(&daemon_path)
+    let child = Command::new(&exe)
         .arg("--hidden")
         .spawn()
         .map_err(|e| format!("启动 daemon 失败: {e}"))?;
@@ -207,7 +215,6 @@ fn api_url(port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{path}")
 }
 
-/// 发 GET 请求
 fn get_json(port: u16, token: &str, path: &str) -> Result<Value, String> {
     let client = reqwest::blocking::Client::new();
     let resp = client
@@ -218,7 +225,6 @@ fn get_json(port: u16, token: &str, path: &str) -> Result<Value, String> {
     parse_response(resp)
 }
 
-/// 发 POST 请求（可选 body）
 fn post_json(port: u16, token: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
     let client = reqwest::blocking::Client::new();
     let mut req = client
@@ -284,7 +290,6 @@ fn cmd_add(
     Ok(())
 }
 
-/// 归一化 URL（无协议时补 http://；保留用户输入字面值含尾部斜杠）
 fn normalize_url(url: &str) -> Result<String, String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
@@ -297,7 +302,6 @@ fn normalize_url(url: &str) -> Result<String, String> {
     }
 }
 
-/// 分号分隔的钩子列表
 fn split_hooks(s: &str) -> Vec<String> {
     s.split(';')
         .map(|x| x.trim().to_string())
@@ -332,15 +336,13 @@ fn cmd_list() -> Result<(), String> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let url = app.get("url").and_then(|v| v.as_str()).unwrap_or("?");
-        let sys = if is_system { "[系统]" } else { "" };
-        // 状态（查 running 列表）
+        let sys = if is_system { " [系统]" } else { "" };
         let status = app_running_state(port, &token, id)?;
-        println!("{:4}  {:20}  {:8}  {} {}", id, name, status, url, sys);
+        println!("{:4}  {:20}  {:8}  {}{}", id, name, status, url, sys);
     }
     Ok(())
 }
 
-/// 查询应用运行状态
 fn app_running_state(port: u16, token: &str, id: &str) -> Result<String, String> {
     let st = get_json(port, token, &format!("/api/apps/{id}/status"))?;
     Ok(st
@@ -459,7 +461,6 @@ fn json_str_list(v: Option<&Value>) -> String {
 
 fn cmd_console() -> Result<(), String> {
     let (port, token) = ensure_daemon()?;
-    // 启动/激活 console 系统应用
     let resp = post_json(port, &token, "/api/apps/console/launch", None)?;
     let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
     println!("ℹ️ 控制台: {status}");
