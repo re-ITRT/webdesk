@@ -11,14 +11,16 @@
 - **桌面快捷方式入口**：一键创建 `.lnk`，`WebDesk.exe --launch <appId>` 直达。
 - **单例 + 进程调度**：唯一主进程，IPC 指令转发，极速启动响应。
 
-## 技术栈（初定）
+## 技术栈（已定案）
 
 | 层 | 选型 |
 |---|---|
-| 语言/运行时 | C# / .NET 8 |
-| 管理界面 | 内置 Web 控制台（HTML/CSS/JS，本地 HTTP 托管，作为首个默认 Web 应用）|
-| 模式 B 内核 | WebView2（Evergreen，per-app 可切 Fixed Version）|
-| 进程/生命周期 | 命名互斥体 + 命名管道 IPC + Job Object 进程树回收 |
+| 语言/运行时 | C# / **.NET 10 LTS** |
+| 原生薄壳 | WinForms（窗口承载 + 动态托盘 + 通知）|
+| 模式 B 内核 | WebView2（Evergreen 默认，Fixed Version 共享目录 opt-in）|
+| 本地 HTTP | ASP.NET Core Minimal API（管理 API + 静态控制台，仅回环+token）|
+| 管理界面 | 内置 Web 控制台（HTML/CSS/JS，作为首个默认 Web 应用）|
+| 进程/生命周期 | 命名互斥体 + 命名管道 IPC + Job Object 进程树回收 + 工作项驱动生命周期 |
 | 配置 | JSON（`%APPDATA%\WebDesk\config\`）|
 
 ## 仓库结构

@@ -8,6 +8,8 @@
 > 详细论述仍以 `requirements-v1.2-draft.md`（含 V1.3 修订）与 `docs/design/` 下的决策记录为准。
 
 > **V1.4 追加**：① 应用级身份 **AppIdentity**——cookie/密钥/插件按应用隔离并跨内核一致，模式 A 默认独立 profile（ADR-009，修订 ADR-002）；② **工作项驱动生命周期**——平台随第一个 app 启动/最后一个工作项结束而启停，托盘默认无图标、仅当存在后台驻留应用时动态出现（ADR-010）。详见 `docs/design/2026-08-25-app-identity-across-engines.md` 与 `docs/design/2026-08-25-work-item-lifecycle.md`。
+>
+> **V1.5（2026-08-25 追加）**：**技术选型定案**——C#/.NET 10 LTS（.NET 8/9 于 2026-11-10 EOL）+ WinForms 薄壳 + WebView2 + ASP.NET Core Minimal API；Fixed Version 运行时改为平台共享目录 + per-app opt-in（250MB+ 不宜 per-app 打包）。详见 `docs/design/2026-08-25-tech-selection.md`。
 
 **图例**
 - ✅ 已定（附决策出处）
@@ -245,13 +247,13 @@
 | ADR-001 | 双模引擎 per-app，非全局开关 | V1.1 |
 | ADR-002 | 模式 A = 轻控制（深定制仅模式 B） | V1.2 |
 | ADR-002（修订）| 模式 A = profile 级控制：默认独立 profile，应用级身份隔离+跨内核一致；仍不开放 CDP | V1.4 / ADR-009 |
-| ADR-003 | 模式 B 内核 = WebView2（Evergreen/Fixed） | V1.2 |
+| ADR-003（修订）| 模式 B 内核 = WebView2；Evergreen 默认，Fixed Version 为平台共享目录 + per-app opt-in（250MB+ 不宜 per-app 打包） | V1.5 / 技术选型 |
 | ADR-004 | 后台驻留按模式分机制（B 隐藏 / A 退出） | V1.2 |
 | ADR-010 | 工作项驱动生命周期：平台随“第一个 app 启动/最后一个工作项结束”而启停；托盘按需动态出现 | V1.4 |
 | ADR-005 | 后台服务层 = 常驻进程，非 Windows Service | V1.2 |
 | ADR-006 | 进程回收 = Job Object | V1.2 |
 | ADR-007 | 管理界面 = Web 控制台，且为平台首个默认应用 | V1.3 |
-| ADR-008 | 技术栈 = C#/.NET 8（备选 Tauri） | V1.2 |
+| ADR-008（修订）| 技术栈 = C#/.NET 10 LTS + WinForms 薄壳 + WebView2 + ASP.NET Core Minimal API（详见技术选型文档） | V1.5 / 技术选型 |
 | ADR-009 | 应用身份（AppIdentity）：cookie / 密钥 / 插件按应用隔离并跨内核一致；模式 A 默认独立 profile | V1.4 |
 
 ---

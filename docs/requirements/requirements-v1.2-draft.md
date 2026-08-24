@@ -202,10 +202,14 @@ Chrome 的 browser 进程是**共享**的：同 profile 下多个 Chrome 窗口/
 
 | 层 | 选型 | 理由 |
 |---|---|---|
-| 语言/运行时 | C# / .NET 8 | 托盘、单例、命名管道、Job Object、UAC、Win32 窗口操作均为第一公民；空闲 <50MB、快速启动易达标 |
+| 语言/运行时 | C# / **.NET 10 LTS** | .NET 8/9 于 2026-11-10 EOL；.NET 10 LTS 支持至 2028-11；托盘、单例、命名管道、Job Object、UAC、Win32 均为第一公民 |
+| 原生薄壳 | **WinForms** | 管理界面已 Web 化（ADR-007），原生只剩 窗口承载 + 动态托盘 + 通知；WinForms WebView2 控件成熟、NotifyIcon 内置 |
 | 管理界面 | 内置 Web 控制台（HTML/CSS/JS，本地 HTTP 托管） | 控制台即首个默认应用（见 2.7），吃自己的狗粮；界面与平台共享渲染/注入/驻留能力 |
-| 模式 B 内核 | WebView2 | 轻量（Evergreen 零额外体积）、可控、无打包 Chromium 之重 |
-| 备选 | Tauri (Rust) | 若确定未来要 macOS 跨平台；但系统集成需自写更多层。当前不选 |
+| 模式 B 内核 | WebView2 | 轻量（Evergreen 零额外体积）、可控、无打包 Chromium 之重；Fixed Version 为平台共享目录 + per-app opt-in |
+| 本地 HTTP | ASP.NET Core Minimal API（Kestrel，仅回环+token） | 管理 API + 静态控制台同进程托管；可降级 HttpListener |
+| 备选 | Tauri (Rust) | macOS 成为硬需求时再评估（单 webview 模型与多隔离 WebView2 需求错配，当前不选） |
+
+> **完整选型论证**（WebView2 扩展 API 验证、Fixed Version 共享化、Tauri 错配分析、资源预估、风险表）见 `docs/design/2026-08-25-tech-selection.md`。
 
 ---
 
