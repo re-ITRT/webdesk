@@ -10,6 +10,8 @@
 > **V1.4 追加**：① 应用级身份 **AppIdentity**——cookie/密钥/插件按应用隔离并跨内核一致，模式 A 默认独立 profile（ADR-009，修订 ADR-002）；② **工作项驱动生命周期**——平台随第一个 app 启动/最后一个工作项结束而启停，托盘默认无图标、仅当存在后台驻留应用时动态出现（ADR-010）。详见 `docs/design/2026-08-25-app-identity-across-engines.md` 与 `docs/design/2026-08-25-work-item-lifecycle.md`。
 >
 > **V1.5（2026-08-25 追加）**：**技术选型定案**——C#/.NET 10 LTS（.NET 8/9 于 2026-11-10 EOL）+ WinForms 薄壳 + WebView2 + ASP.NET Core Minimal API；Fixed Version 运行时改为平台共享目录 + per-app opt-in（250MB+ 不宜 per-app 打包）。详见 `docs/design/2026-08-25-tech-selection.md`。
+>
+> **V1.6（2026-08-25 追加）**：**完全移除模式 A（系统 Chrome）**——WebView2 成为唯一渲染引擎（ADR-011）。理由：模式 A 复杂度（Chrome 探测/profile 策略/进程树边界/CDP 风险/双引擎协调）≫ 价值（复用系统 Chrome 登录态，已被 ADR-009 放弃）。详见 `docs/design/2026-08-25-drop-mode-a.md`。
 
 **图例**
 - ✅ 已定（附决策出处）
@@ -21,23 +23,23 @@
 ## 1. 产品定位
 
 ### 1.1 一句话
-把任意 Web 应用当作“原生桌面应用”来运行与管理的 Windows 平台：**双模渲染引擎（系统 Chrome / WebView2，按应用独立选择）+ 生命周期钩子 + 后台驻留 + 托盘管理 + 桌面快捷方式 + Web 管理控制台**。
+把任意 Web 应用当作“原生桌面应用”来运行与管理的 Windows 平台：**WebView2 单引擎渲染 + per-app 身份隔离（cookie/密钥/扩展）+ 生命周期钩子 + 工作项驱动生命周期（无感常驻/按需托盘）+ 后台驻留 + 桌面快捷方式 + Web 管理控制台**。
 
 ### 1.2 差异化（对标）
 | 方案 | 差距 |
 |---|---|
 | Chrome/Edge “安装为应用” | 无生命周期钩子、无 per-app 注入/扩展隔离、无托盘级驻留管理 |
-| WebCatalog | 用自有引擎，不支持“复用系统 Chrome 登录态”的双模；免费版限数量 |
+| WebCatalog | 原生 UI（我们是 Web 控制台）；无工作项生命周期（无感常驻） |
 | Fluid / Coherence | 仅 macOS |
 | Ferdium / Rambox | 多应用挤单一窗口，非独立窗口 |
 | Electron 包装 | 包体大、更新滞后，正是本项目要避免的 |
 
-**差异点 = 双模引擎 + 生命周期钩子 + 托盘级生命周期管理 + Web 控制台（吃自己狗粮）** 的组合。
+**差异点 = per-app 身份隔离（cookie/密钥/扩展）+ 生命周期钩子 + 工作项生命周期 + Web 控制台（吃自己狗粮）** 的组合。
 
 ### 1.3 明确不做（Do-not）
 - ❌ 应用商店 / 应用分发市场
 - ❌ 浏览器调试 UI（不面向普通用户暴露 CDP）
-- ❌ 模式 A 的深度定制（CSS/JS 注入、按应用扩展隔离）——模式 B 专属
+- ❌ **模式 A（系统 Chrome 调用）**——ADR-011，WebView2 单引擎
 - ❌ 同应用多窗口并存（默认单窗口，重复启动=激活已有窗口）
 
 ---
@@ -46,53 +48,46 @@
 
 ### 2.1 应用数据模型（核心实体）
 
-**App 实体字段**（✅=已定字段；⚠️=字段形态待定）：
+**App 实体字段**（✅=已定；⚠️=待定）：
 
 | 字段 | 类型/取值 | 状态 | 说明 |
 |---|---|---|---|
 | `id` | string（唯一） | ✅ | 应用唯一标识，供 `--launch <id>` 使用 |
 | `name` | string | ✅ | 显示名 |
 | `url` | string | ✅ | 应用地址 |
-| `renderEngine` | `"system"` \| `"embedded"` | ✅ | 模式 A / B |
-| `runtimeProfile` | `"evergreen"` \| `"fixed"` | ✅ | 模式 B 时生效（默认 evergreen） |
-| `chromeProfile` | `"independent"`（默认）\| `"shared"`（opt-in） | ✅ ADR-009 | 模式 A 的 profile 策略（独立为主，共享为兼容 opt-in） |
+| `runtimeProfile` | `"evergreen"` \| `"fixed"` | ✅ | WebView2 运行时档位（默认 evergreen；fixed=平台共享目录 opt-in） |
 | `closeAction` | `"background"` \| `"quit"` | ⚠️ O2 | 关窗行为 |
 | `hooks` | `{ preLaunch[], postExit[] }` | ⚠️ O3 | 钩子命令列表 |
 | `hookOptions` | shell / timeout / blocking | ⚠️ O3 | 每个事件的钩子选项 |
-| `uiControls` | 地址栏/导航/刷新… | ✅ | 仅模式 B 完整生效 |
-| `injections` | CSS / JS + 时机 | ⚠️ O4 | 仅模式 B |
-| `extensions` | 扩展标识列表 | ⚠️ O5 | 仅模式 B |
-| `appIdentity` | 身份容器（cookie / secrets / extensions）| ✅ ADR-009 | 按应用隔离、跨内核一致；模式 A 独立 profile 亦承载 |
+| `uiControls` | 地址栏/导航/刷新… | ✅ | 原生控件开关 |
+| `injections` | CSS / JS + 时机 | ⚠️ O4 | |
+| `extensions` | 扩展标识列表 | ⚠️ O5 | 本地 unpacked |
+| `appIdentity` | 身份容器（cookie / secrets / extensions）| ✅ ADR-009 | 按应用隔离、平台统一管理（ADR-011 单引擎化） |
 | `launchOnBoot` | bool | ⚠️ O10 | 开机自启（平台级或应用级） |
 | `isSystem` | bool | ✅ | 系统应用标记（管理控制台） |
 | `tags` | string[] | ⚠️ O11 | 分组/标签（P2） |
 | `createdAt` / `updatedAt` | time | ✅ | |
 
+> 注：ADR-011 移除模式 A 后，`renderEngine`、`chromeProfile` 字段不再存在——引擎单一（WebView2）。
+
 **CRUD**：控制台提供应用增删改查；删除前二次确认；系统应用（管理控制台）受保护——可删除但可经管理 API 恢复重建。
 
-### 2.2 双模渲染引擎
+### 2.2 渲染引擎（单引擎：WebView2）
 
-- **per-app 模式单选**：应用编辑页提供独立模式单选按钮，非全局开关 ✅
-- **共存**：模式 A / B 应用可同时运行，互不干扰 ✅
+> **ADR-011**：完全移除模式 A（系统 Chrome），WebView2 为唯一渲染引擎。产品定位：**轻量 WebView2 SSB 管理平台**。
 
-**模式 A（系统 Chrome）**
+**渲染能力（WebView2，均为稳定 API）**
 | 项 | 状态 | 说明 |
 |---|---|---|
-| Chrome 探测 | ✅ | 注册表（HKLM/HKCU/WOW6432Node）+ App Paths 双保险 + 版本号 |
-| 探测失败引导 | ✅ | 清晰提示，引导切模式 B |
-| 启动 | ✅ | `chrome --app=<url>` 独立窗口 |
-| 独立 profile（默认） | ✅ ADR-009 | `--user-data-dir=<appDir>`；应用级 cookie 隔离与跨内核共享、按应用扩展、可后台驻留、可终止 |
-| 共享 profile（opt-in） | ✅ ADR-009 | 复用系统 Chrome 登录态；不隔离、不注入、关闭即退出（回到原 2.1.1 轻控制） |
-| 扩展加载 | ✅ ADR-009 | `--load-extension=<dirs>` |
-| 深控（CDP） | ✅ 排除 | 运行时 JS 注入 / DOM 操作 / 隐藏导航 = 模式 B 专属，模式 A 不开放 CDP |
-
-**模式 B（WebView2）**
-| 项 | 状态 | 说明 |
-|---|---|---|
-| 内核 | ✅ | WebView2（Evergreen 默认 / per-app Fixed Version） |
+| 内核 | ✅ | WebView2（Evergreen 默认 / Fixed Version 平台共享目录 opt-in） |
+| 每应用身份隔离 | ✅ | 每应用独立 UserDataFolder |
+| cookie 管理 | ✅ | `CookieManager`（增删查改） |
+| CSS/JS 注入 | ✅ | `AddScriptToExecuteOnDocumentCreatedAsync` |
+| 扩展加载（per-app） | ✅ | `AddBrowserExtensionAsync`（本地 unpacked） |
 | 运行时缺失 | ✅ | 检测 + 引导下载（bootstrap） |
-| 每应用存储隔离 | ✅ | 独立 UserDataFolder，互不串数据 |
-| 深度定制 | ✅ | 控件开关 / CSS-JS 注入 / 扩展隔离 |
+| 后台驻留 | ✅ | 隐藏窗口不销毁渲染器 → WebSocket 保活 |
+| 深控 | ✅ | 原生控件开关 / 注入 / 扩展，无 CDP 暴露 |
+| DevTools | ✅ | 支持，默认不对普通用户暴露 |
 
 ### 2.3 生命周期钩子
 | 项 | 状态 |
@@ -111,20 +106,18 @@
 ### 2.4 后台持久化驻留
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 模式 B：关窗=隐藏不销毁渲染器 | ✅ | WebSocket/后台任务自然保活 |
-| 模式 A：共享 profile 关闭即退出 | ✅ | 文档向用户明示差异 |
-| 模式 A：独立 profile 可尝试隐藏驻留 | ⚠️ O1 | 依赖 profile 决策 |
+| 关窗=隐藏不销毁渲染器 | ✅ | WebSocket/后台任务自然保活（ADR-011 单引擎后统一） |
 | per-app closeAction 可配 | ⚠️ O2 | |
-| 托盘：应用列表 / 唤出 / 彻底终止 | ✅ | |
-| 后台网络保活 | ✅ | 模式 B 渲染器存活即保活 |
+| 托盘：应用列表 / 唤出 / 彻底终止 | ✅ | 按需动态出现（ADR-010） |
+| 后台网络保活 | ✅ | 渲染器存活即保活 |
 
 ### 2.5 界面及功能栏定制
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 浏览器原生控件开关 | ✅ | 仅模式 B；模式 A 仅 `--app` 无地址栏这一档 |
-| CSS / JS 注入 | ✅ | 仅模式 B；附安全提示（见 §3.4） |
+| 浏览器原生控件开关 | ✅ | WebView2 原生控件开关 |
+| CSS / JS 注入 | ✅ | 附安全提示（见 §3.4） |
 | 注入时机 | ⚠️ O4 | document_start / document_idle |
-| 扩展按需加载（per-app 列表） | ✅ | 仅模式 B |
+| 扩展按需加载（per-app 列表） | ✅ | 本地 unpacked |
 | 扩展来源 | ⚠️ O5 | 本地 unpacked / Chrome Web Store |
 
 ### 2.6 桌面快捷方式
@@ -196,7 +189,7 @@
 |---|---|
 | Windows 10/11 优先；macOS 后续 | ✅ |
 | 钩子 shell：cmd / powershell / wsl | ✅ |
-| Chrome 探测与回退 | ✅ |
+| WebView2 运行时缺失检测 + 引导下载 | ✅ |
 | DPI / 多显示器 | ⚠️ P2 |
 | 网络代理（跟随系统 / per-app） | ⚠️ O17 |
 
@@ -205,7 +198,7 @@
 |---|---|
 | JSON，`%APPDATA%\WebDesk\config\` | ✅ |
 | 导出 / 导入（备份与迁移） | ✅ |
-| `renderEngine` + `runtimeProfile` 字段 | ✅ |
+| `runtimeProfile` 字段（evergreen/fixed） | ✅ |
 | 配置损坏容错（备份 / 恢复） | ⚠️ 建议补 |
 
 ### 3.4 安全
@@ -247,6 +240,7 @@
 | ADR-001 | 双模引擎 per-app，非全局开关 | V1.1 |
 | ADR-002 | 模式 A = 轻控制（深定制仅模式 B） | V1.2 |
 | ADR-002（修订）| 模式 A = profile 级控制：默认独立 profile，应用级身份隔离+跨内核一致；仍不开放 CDP | V1.4 / ADR-009 |
+| ADR-011 | **完全移除模式 A**——WebView2 为唯一渲染引擎（单引擎化） | V1.6 |
 | ADR-003（修订）| 模式 B 内核 = WebView2；Evergreen 默认，Fixed Version 为平台共享目录 + per-app opt-in（250MB+ 不宜 per-app 打包） | V1.5 / 技术选型 |
 | ADR-004 | 后台驻留按模式分机制（B 隐藏 / A 退出） | V1.2 |
 | ADR-010 | 工作项驱动生命周期：平台随“第一个 app 启动/最后一个工作项结束”而启停；托盘按需动态出现 | V1.4 |
@@ -289,6 +283,8 @@
 
 | 里程碑 | 内容 | 目标 |
 |---|---|---|
-| **M0 原型闭环** | daemon（HTTP + 调度 + 单例 + 托盘）+ 静态控制台页（CRUD）+ 模式 B 承载窗口 | 验证：内存 <50MB、启动延迟、控制台吃自己狗粮 |
-| **M1 MVP** | 双模引擎 + 生命周期钩子 + 后台驻留 + 桌面快捷方式 + 单例调度 + **应用级身份（cookie/密钥/扩展）** | 核心产品可用；身份按应用隔离、跨内核一致 |
-| **M2 完整版** | 模式 A↔B cookie 自动同步 / 模式 A 密钥注入（Bridge 扩展）/ Fixed Version / 自身更新 / 多语言 / 性能监控 | 对标 WebCatalog 完整功能 |
+| **M0 原型闭环** | daemon（HTTP + 调度 + 单例 + 托盘）+ 静态控制台页（CRUD）+ WebView2 承载窗口 | 验证：内存 <50MB、启动延迟、控制台吃自己狗粮 |
+| **M1 MVP** | WebView2 单引擎 + 生命周期钩子 + 后台驻留 + 桌面快捷方式 + 单例调度 + **应用级身份（cookie/密钥/扩展）** | 核心产品可用；身份按应用隔离、平台统一管理 |
+| **M2 完整版** | Fixed Version 共享 / 自身更新 / 多语言 / 性能监控 | 对标 WebCatalog 完整功能 |
+
+> 注：ADR-011 移除模式 A 后，原 M2 的"跨内核 cookie 自动同步"与"模式 A 密钥注入"需求消失。

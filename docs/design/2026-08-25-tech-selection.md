@@ -11,10 +11,9 @@
 |---|---|
 | **语言/运行时** | C# / **.NET 10 LTS**（支持至 2028-11） |
 | **原生薄壳** | **WinForms**（仅承担：模式 B 窗口承载 + 动态托盘 + 通知） |
-| **模式 B 内核** | **WebView2**（Microsoft.Web.WebView2，官方 .NET SDK） |
+| **模式 B 内核** | **WebView2**（Microsoft.Web.WebView2，官方 .NET SDK；**唯一渲染引擎**，ADR-011） |
 | **本地 HTTP（管理 API + 静态控制台）** | **ASP.NET Core Minimal API**（Kestrel，仅回环 + 随机端口 + 会话 token） |
 | **系统集成** | 原生 .NET：命名互斥体 / 命名管道 / Job Object(P/Invoke) / 注册表 / UAC / .lnk(COM) |
-| **模式 A** | `Process.Start(chrome --app=… --user-data-dir=… --load-extension=…)` |
 | **单例 + IPC** | Named Mutex + NamedPipeServerStream |
 | **跨平台** | Windows 优先；macOS 后续 = 薄壳重写（Swift/AppKit + WKWebView），管理控制台（Web）零改动 |
 
@@ -93,18 +92,16 @@ Tauri 2 已稳定、包体小、跨平台，但**与本项目核心需求错配*
 | 轻量启动器 | `WebDesk.Launcher.exe`（独立小进程） | .NET 单文件 |
 | 工作项驱动生命周期 | daemon 状态机：驻留型 app / 执行中钩子 / 控制台打开 | ADR-010 |
 | 本地 HTTP | ASP.NET Core Minimal API + 静态文件 | 仅回环 + token |
-| 模式 A 启动 | `Process.Start(chrome --app --user-data-dir --load-extension)` | Chrome 探测：注册表 + App Paths |
 | 模式 B 承载 | WinForms + `WebView2` 控件，per-app Environment | 独立 UserDataFolder |
-| 身份（cookie） | WebView2 CookieManager ↔ 平台加密仓库；模式 A Cookies SQLite(DPAPI) | ADR-009；跨内核同步=M2 |
-| 身份（密钥注入） | WebView2 `AddScriptToExecuteOnDocumentCreated`；模式 A Bridge 扩展(M2) | |
-| 身份（扩展） | WebView2 `AddBrowserExtensionAsync`；Chrome `--load-extension` | 本地 unpacked |
+| 身份（cookie） | WebView2 CookieManager ↔ 平台加密仓库 | ADR-009 |
+| 身份（密钥注入） | WebView2 `AddScriptToExecuteOnDocumentCreated` | |
+| 身份（扩展） | WebView2 `AddBrowserExtensionAsync` | 本地 unpacked |
 | 钩子执行 | 后台进程 + `taskkill /T`；WSL 进程组单独处理 | cmd/powershell/wsl |
 | 进程树回收 | Job Object（`CreateJobObject` P/Invoke） | 孤儿回收 |
 | 托盘（动态） | WinForms `NotifyIcon` | ADR-010 按需出现 |
 | 桌面快捷方式 | WScript.Shell COM 建 `.lnk` | 或 IShellLink |
 | 开机自启 | HKCU Run 注册表项 | 安装时可选 |
 | UAC 提权 | per-app manifest `requireAdministrator` / `runas` verb | O17 |
-| Chrome 探测 | 注册表 HKLM/HKCU/WOW6432Node + App Paths | |
 | 配置持久化 | JSON（System.Text.Json），`%APPDATA%\WebDesk\config\` | |
 | 日志 | Serilog / 自研轻量，`%APPDATA%\WebDesk\logs\` | |
 
@@ -133,8 +130,8 @@ Tauri 2 已稳定、包体小、跨平台，但**与本项目核心需求错配*
 ## 10. 里程碑落点
 
 - **M0**：.NET 10 + WinForms + WebView2 空壳 + ASP.NET Core 本地 API + 静态控制台页 + 单例/管道 → 验证内存/启动/吃狗粮
-- **M1**：全能力（双模 + 钩子 + 身份 + 驻留 + 快捷方式 + 工作项生命周期）
-- **M2**：跨内核 cookie 同步 / Fixed Version 共享 / macOS 评估
+- **M1**：全能力（单引擎 WebView2 + 钩子 + 身份 + 驻留 + 快捷方式 + 工作项生命周期）
+- **M2**：Fixed Version 共享 / 自身更新 / 多语言 / macOS 评估
 
 ---
 
