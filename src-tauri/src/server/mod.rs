@@ -18,7 +18,36 @@ static API_CONFIG: OnceLock<ApiConfig> = OnceLock::new();
 
 /// 记录 API 配置（routes::spawn 启动成功后调用）
 pub fn set_api_config(cfg: ApiConfig) {
+    // 先落盘供 CLI 发现 daemon，再写入全局
+    let _ = persist_api_config(&cfg);
     let _ = API_CONFIG.set(cfg);
+}
+
+/// 把 API 配置写入磁盘（供独立 CLI 进程读取连接 daemon）
+fn persist_api_config(cfg: &ApiConfig) -> anyhow::Result<()> {
+    let dir = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("WebDesk");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("api.json");
+    let json = serde_json::json!({ "port": cfg.port, "token": cfg.token });
+    std::fs::write(&path, serde_json::to_string_pretty(&json)?)?;
+    Ok(())
+}
+
+/// 从磁盘读取 API 配置（CLI 发现 daemon 用；当前 CLI 内置同等逻辑，保留供诊断）
+#[allow(dead_code)]
+pub fn load_api_config_from_disk() -> Option<ApiConfig> {
+    let path = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("WebDesk")
+        .join("api.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+    Some(ApiConfig {
+        port: v.get("port")?.as_u64()? as u16,
+        token: v.get("token")?.as_str()?.to_string(),
+    })
 }
 
 /// 获取当前 API 配置（M1 起供外部使用）

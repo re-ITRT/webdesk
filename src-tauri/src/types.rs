@@ -149,6 +149,128 @@ pub struct IdentitySummary {
     pub has_secrets: bool,
 }
 
+impl App {
+    /// 从部分字段构造 App（name/url 必填，其余用默认值）。
+    /// 供 POST /api/apps 使用（Web UI 与 CLI 都只提交部分字段）。
+    pub fn from_partial(input: &serde_json::Value) -> Result<Self, String> {
+        let name = input
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or("字段 name 必填")?
+            .to_string();
+        let url = input
+            .get("url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or("字段 url 必填")?
+            .to_string();
+
+        let close_action = input
+            .get("close_action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("background")
+            .to_string();
+        let runtime_profile = input
+            .get("runtime_profile")
+            .and_then(|v| v.as_str())
+            .unwrap_or("system")
+            .to_string();
+
+        // hooks
+        let mut hooks = HookConfig::default();
+        if let Some(h) = input.get("hooks") {
+            hooks.pre_launch = h
+                .get("pre_launch")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            hooks.post_exit = h
+                .get("post_exit")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+
+        // hook_options
+        let mut hook_options = HookOptions::default();
+        if let Some(o) = input.get("hook_options") {
+            if let Some(s) = o.get("shell").and_then(|v| v.as_str()) {
+                hook_options.shell = s.to_string();
+            }
+            if let Some(t) = o.get("timeout_ms").and_then(|v| v.as_u64()) {
+                hook_options.timeout_ms = t;
+            }
+            if let Some(b) = o.get("blocking").and_then(|v| v.as_bool()) {
+                hook_options.blocking = b;
+            }
+        }
+
+        // ui_controls / injections / extensions
+        let ui_controls = input
+            .get("ui_controls")
+            .and_then(|v| serde_json::from_value::<UiControls>(v.clone()).ok())
+            .unwrap_or_default();
+        let injections = input
+            .get("injections")
+            .and_then(|v| serde_json::from_value::<Injections>(v.clone()).ok())
+            .unwrap_or_default();
+        let extensions = input
+            .get("extensions")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let is_system = input
+            .get("is_system")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let launch_on_boot = input
+            .get("launch_on_boot")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let tags = input
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(App {
+            id: String::new(), // store::create 自动生成
+            name,
+            url,
+            runtime_profile,
+            close_action,
+            hooks,
+            hook_options,
+            ui_controls,
+            injections,
+            extensions,
+            is_system,
+            launch_on_boot,
+            tags,
+            created_at: String::new(),
+            updated_at: String::new(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

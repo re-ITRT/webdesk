@@ -23,8 +23,11 @@ pub struct AppState {
     pub store: AppStore,
     pub token: String,
     pub started_at: std::time::Instant,
-    pub running: RwLock<Vec<String>>,    // 运行中的应用 id
-    pub background: RwLock<Vec<String>>, // 后台驻留的应用 id
+    /// 兼容字段（M2 起移除；当前用全局 AppState.running）
+    #[allow(dead_code)]
+    pub running: RwLock<Vec<String>>,
+    #[allow(dead_code)]
+    pub background: RwLock<Vec<String>>,
     pub port: RwLock<u16>,
     /// Tauri 句柄（经它访问全局 AppState：scheduler / identity / hooks）
     pub app_handle: tauri::AppHandle,
@@ -176,8 +179,19 @@ async fn status(State(state): State<SharedState>, headers: axum::http::HeaderMap
     if let Err(e) = check_token(&state, &headers) {
         return err_response(StatusCode::UNAUTHORIZED, e);
     }
-    let running = state.running.read().unwrap().clone();
-    let background = state.background.read().unwrap().clone();
+    // 从全局 AppState 读运行状态（与 launch 同一状态源）
+    let gstate = state.app_handle.state::<crate::app_state::AppState>();
+    let all = gstate.list_running();
+    let running = all
+        .iter()
+        .filter(|a| a.status == "running")
+        .map(|a| a.id.clone())
+        .collect();
+    let background = all
+        .iter()
+        .filter(|a| a.status == "background")
+        .map(|a| a.id.clone())
+        .collect();
     let uptime = state.started_at.elapsed().as_secs();
     let port = *state.port.read().unwrap();
     let ps = PlatformStatus {
@@ -207,17 +221,21 @@ async fn list_apps(State(state): State<SharedState>, headers: axum::http::Header
 async fn create_app(
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
-    Json(app): Json<App>,
+    Json(input): Json<serde_json::Value>,
 ) -> Response {
     if let Err(e) = check_token(&state, &headers) {
         return err_response(StatusCode::UNAUTHORIZED, e);
     }
-    match state.store.create(app) {
-        Ok(app) => (StatusCode::CREATED, Json(app)).into_response(),
-        Err(e) => err_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ApiError::new("internal", format!("创建应用失败: {e}")),
-        ),
+    // 支持部分字段创建（name/url 必填，其余用默认）
+    match App::from_partial(&input) {
+        Ok(app) => match state.store.create(app) {
+            Ok(app) => (StatusCode::CREATED, Json(app)).into_response(),
+            Err(e) => err_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiError::new("internal", format!("创建应用失败: {e}")),
+            ),
+        },
+        Err(e) => err_response(StatusCode::BAD_REQUEST, ApiError::new("invalid_input", e)),
     }
 }
 
@@ -384,18 +402,12 @@ async fn app_status(
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
     };
-    let running = state.running.read().unwrap().contains(&id);
-    let background = state.background.read().unwrap().contains(&id);
-    let st = if running {
-        "running"
-    } else if background {
-        "background"
-    } else {
-        "stopped"
-    };
+    // 从全局 AppState 查运行状态（与 launch 同一状态源）
+    let gstate = state.app_handle.state::<crate::app_state::AppState>();
+    let st = gstate.app_status(&id);
     Json(AppStatus {
         id,
-        status: st.into(),
+        status: st,
         window_id: None,
         memory_kb: None,
         started_at: None,
