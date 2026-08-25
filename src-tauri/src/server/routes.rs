@@ -55,10 +55,15 @@ pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
         app_handle: tauri_handle.clone(),
     });
 
-    let app = build_router(state.clone());
-    // 随机端口（0 = 系统分配）
-    let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // 固定端口 3070（用户指定）
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3070));
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            // 3070 被占（如已有一个 daemon）→ 报错提示
+            return Err(anyhow::anyhow!("端口 3070 绑定失败（可能已有 WebDesk 在运行）: {e}"));
+        }
+    };
     let port = listener.local_addr()?.port();
     *state.port.write().unwrap() = port;
 
@@ -87,20 +92,35 @@ pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
 
     log::info!("管理 API 已启动: http://127.0.0.1:{port}");
 
-    // 自动启动管理控制台（第一个默认 WebApp，吃自己的狗粮）：
-    // daemon 起来后，用自身 WebView 机制打开管理控制台窗口。
-    // 用 --hidden 启动时不自动弹控制台（后台服务模式）。
+    // 启动路径（用户定义的默认语义）：
+    // - 0 参数 / --console → 默认打开管理控制台（console）
+    // - --launch=<id>     → 打开指定应用
+    // - --hidden          → 后台服务模式，不弹任何窗口
     {
-        let is_hidden = std::env::args().any(|a| a == "--hidden");
+        let args: Vec<String> = std::env::args().collect();
+        let is_hidden = args.iter().any(|a| a == "--hidden");
         if !is_hidden {
+            // 决定打开哪个应用：--launch=<id> 优先，否则默认 console
+            let target = args
+                .iter()
+                .find(|a| a.starts_with("--launch="))
+                .and_then(|a| a.split('=').nth(1))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "console".to_string());
+
             let handle = state.app_handle.clone();
+            let target_clone = target.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = crate::scheduler::launch_by_id(&handle, "console").await {
-                    log::error!("[启动] 自动打开管理控制台失败: {e}");
+                log::info!("[启动] 自动打开应用: {target_clone}");
+                if let Err(e) = crate::scheduler::launch_by_id(&handle, &target_clone).await {
+                    log::error!("[启动] 自动打开应用失败: {e}");
                 }
             });
         }
     }
+
+    // 构建路由（含 API + 静态控制台托管）
+    let app = build_router(state.clone());
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -121,6 +141,14 @@ fn build_router(state: SharedState) -> Router {
         ])
         .allow_headers(tower_http::cors::Any);
 
+    // 静态控制台资源目录：
+    // - 打包后：resource_dir/webdesk/dist（tauri.conf.json bundle.resources 放入）
+    // - 开发时：项目 src-frontend/dist
+    let frontend_dir = frontend_dist_dir(&state);
+    log::info!("托管前端目录: {}", frontend_dir.display());
+    let serve_dir = tower_http::services::ServeDir::new(&frontend_dir)
+        .fallback(tower_http::services::ServeFile::new(frontend_dir.join("index.html")));
+
     Router::new()
         .route("/api/health", get(health))
         .route("/api/status", get(status))
@@ -139,8 +167,42 @@ fn build_router(state: SharedState) -> Router {
             "/api/apps/{id}/shortcut",
             post(create_shortcut).delete(remove_shortcut),
         )
+        .fallback_service(serve_dir)
         .layer(cors)
         .with_state(state)
+}
+
+/// 定位前端 dist 目录（开发 vs 打包）
+fn frontend_dist_dir(state: &SharedState) -> std::path::PathBuf {
+    // 1) 打包后：resource_dir/webdesk/dist 或 resource_dir/dist
+    if let Ok(res) = state.app_handle.path().resource_dir() {
+        let packaged = res.join("webdesk").join("dist");
+        if packaged.exists() {
+            return packaged;
+        }
+        let direct = res.join("dist");
+        if direct.exists() {
+            return direct;
+        }
+    }
+    // 2) 开发时：从 exe 向上找含 src-frontend/dist 的项目根
+    //    target/debug/webdesk.exe → 向上到项目根 → src-frontend/dist
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent();
+        while let Some(d) = dir {
+            let candidate = d.join("src-frontend").join("dist");
+            if candidate.exists() {
+                return candidate;
+            }
+            dir = d.parent();
+        }
+    }
+    // 3) 兜底：当前目录 src-frontend/dist（尝试 ../）
+    let rel = std::path::PathBuf::from("..").join("src-frontend").join("dist");
+    if rel.exists() {
+        return rel;
+    }
+    std::path::PathBuf::from("src-frontend").join("dist")
 }
 
 // ---------- 鉴权中间件 ----------
