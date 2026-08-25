@@ -172,7 +172,7 @@ function render(): void {
   );
 
   document.getElementById("nav-apps")!.onclick = () => { currentView = "apps"; render(); };
-  document.getElementById("nav-settings")!.onclick = () => { currentView = "settings"; renderSettings(); };
+  document.getElementById("nav-settings")!.onclick = () => { currentView = "settings"; render(); };
 
   if (currentView === "apps") renderApps();
   else renderSettings();
