@@ -367,9 +367,10 @@ pub fn create_shortcut(
 /// - 直接图标文件（.ico/.png/.svg）→ 直接下载
 /// - 网页 URL → 先解析 HTML 找 `<link rel="icon">`，找不到用 `{url}/favicon.ico`
 ///
-/// 注意：不能在此用 reqwest::blocking——daemon 的 HTTP handler 运行在
-/// tokio async 上下文，blocking 会 panic（"Cannot drop a runtime in a
-/// context where blocking is not allowed"）。改用系统 curl（Win10+ 自带）。
+/// 注意：本函数在 spawn_blocking 线程中执行（server 端 create_shortcut 已包
+/// spawn_blocking），因此可用 reqwest::blocking。若在 axum async 上下文直接
+/// 调用会 panic（"Cannot drop a runtime in a context where blocking is not
+/// allowed"）。
 fn download_icon(url: &str) -> anyhow::Result<String> {
     let data_dir = dirs::data_dir()
         .ok_or_else(|| anyhow::anyhow!("无法定位数据目录"))?
@@ -380,31 +381,55 @@ fn download_icon(url: &str) -> anyhow::Result<String> {
     // 解析出最终图标 URL（网页→解析 favicon；图标文件→直接）
     let icon_url = resolve_icon_url(url)?;
 
-    // 从图标 URL 推断文件名
-    let filename = icon_url
-        .split('/')
-        .next_back()
-        .filter(|s| !s.is_empty() && s.contains('.'))
-        .unwrap_or("favicon.ico");
+    // 从图标 URL 推断文件名（去掉 query 参数 + 清理非法字符）
+    let filename = safe_filename(&icon_url);
     let dest = data_dir.join(filename);
 
-    // 用系统 curl 下载（-L 跟随重定向，-s 静默，-o 输出文件，--max-time 限时）
-    let out = std::process::Command::new("curl.exe")
-        .args(["-L", "-s", "--max-time", "10", "-o"])
-        .arg(&dest)
-        .arg(&icon_url)
-        .output()
-        .map_err(|e| anyhow::anyhow!("调用 curl 失败: {e}"))?;
-
-    if !dest.exists() || dest.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
-        anyhow::bail!(
-            "下载图标失败（curl exit={:?}）: {icon_url}",
-            out.status.code()
-        );
+    // 用 reqwest 直接下载（模拟浏览器访问，跟随重定向，限时）
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| anyhow::anyhow!("创建 HTTP 客户端失败: {e}"))?;
+    let resp = client
+        .get(&icon_url)
+        .send()
+        .map_err(|e| anyhow::anyhow!("下载图标失败 {icon_url}: {e}"))?;
+    if !resp.status().is_success() {
+        anyhow::bail!("下载图标失败（HTTP {}）: {icon_url}", resp.status());
     }
+    let bytes = resp
+        .bytes()
+        .map_err(|e| anyhow::anyhow!("读取图标失败: {e}"))?;
+    if bytes.is_empty() {
+        anyhow::bail!("下载图标为空: {icon_url}");
+    }
+    std::fs::write(&dest, &bytes)?;
 
     log::info!("[platform] 已下载图标: {icon_url} -> {dest:?}");
     Ok(dest.to_string_lossy().to_string())
+}
+
+/// 从图标 URL 生成安全的本地文件名：
+/// - 去掉 query 参数（?...）
+/// - 取路径最后一段
+/// - 清理 Windows 非法字符（\ / : * ? " < > |）
+/// - 兜底 favicon.ico
+fn safe_filename(icon_url: &str) -> String {
+    // 去掉 query 参数
+    let no_query = icon_url.split('?').next().unwrap_or(icon_url);
+    // 取路径最后一段
+    let last = no_query.split('/').next_back().unwrap_or("");
+    // 清理非法字符
+    let cleaned: String = last
+        .chars()
+        .filter(|c| !matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() || !cleaned.contains('.') {
+        "favicon.ico".to_string()
+    } else {
+        cleaned.to_string()
+    }
 }
 
 /// 解析最终图标 URL：
@@ -439,21 +464,21 @@ fn resolve_icon_url(url: &str) -> anyhow::Result<String> {
     Ok(format!("{}/favicon.ico", origin(url)))
 }
 
-/// 抓取 URL 文本内容（用 curl，限时）
+/// 抓取 URL 文本内容（用 reqwest，限时）
 fn fetch_text(url: &str) -> anyhow::Result<String> {
-    let out = std::process::Command::new("curl.exe")
-        .args(["-L", "-s", "--max-time", "10"])
-        .arg(url)
-        .output()
-        .map_err(|e| anyhow::anyhow!("调用 curl 失败: {e}"))?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "抓取网页失败: {url} (curl exit={:?}, stderr={})",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| anyhow::anyhow!("创建 HTTP 客户端失败: {e}"))?;
+    let resp = client
+        .get(url)
+        .send()
+        .map_err(|e| anyhow::anyhow!("抓取网页失败 {url}: {e}"))?;
+    if !resp.status().is_success() {
+        anyhow::bail!("抓取网页失败（HTTP {}）: {url}", resp.status());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    resp.text()
+        .map_err(|e| anyhow::anyhow!("读取网页失败: {e}"))
 }
 
 /// 把相对 href 转成绝对 URL
