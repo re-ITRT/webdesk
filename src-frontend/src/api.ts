@@ -38,32 +38,25 @@ export interface Health {
 }
 
 let apiPort = 0;
-let apiToken = "";
 
-/** 从 Tauri IPC 获取 API 配置（M0 前端在浏览器内调试时可手动设置） */
+/** 固定端口（用户指定） */
+const FIXED_PORT = 3070;
+
+/**
+ * 初始化 API 配置。
+ * 固定 127.0.0.1:3070，无鉴权（仅本机，不可修改）。
+ */
 export async function initApi(): Promise<boolean> {
-  // @ts-expect-error Tauri IPC（若在 Tauri 环境内）
-  const invoke = window.__TAURI_INTERNALS__?.invoke;
-  if (invoke) {
-    try {
-      const cfg = await invoke("get_api_config");
-      apiPort = cfg.port;
-      apiToken = cfg.token;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
+  apiPort = FIXED_PORT;
+  return true;
 }
 
-export function setApiManual(port: number, token: string) {
+export function setApiManual(port: number) {
   apiPort = port;
-  apiToken = token;
 }
 
 export function isApiReady(): boolean {
-  return apiPort > 0 && apiToken.length > 0;
+  return apiPort > 0;
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -71,7 +64,6 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiToken}`,
       ...(options.headers || {}),
     },
   });

@@ -61,7 +61,9 @@ pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
         Ok(l) => l,
         Err(e) => {
             // 3070 被占（如已有一个 daemon）→ 报错提示
-            return Err(anyhow::anyhow!("端口 3070 绑定失败（可能已有 WebDesk 在运行）: {e}"));
+            return Err(anyhow::anyhow!(
+                "端口 3070 绑定失败（可能已有 WebDesk 在运行）: {e}"
+            ));
         }
     };
     let port = listener.local_addr()?.port();
@@ -146,8 +148,9 @@ fn build_router(state: SharedState) -> Router {
     // - 开发时：项目 src-frontend/dist
     let frontend_dir = frontend_dist_dir(&state);
     log::info!("托管前端目录: {}", frontend_dir.display());
-    let serve_dir = tower_http::services::ServeDir::new(&frontend_dir)
-        .fallback(tower_http::services::ServeFile::new(frontend_dir.join("index.html")));
+    let serve_dir = tower_http::services::ServeDir::new(&frontend_dir).fallback(
+        tower_http::services::ServeFile::new(frontend_dir.join("index.html")),
+    );
 
     Router::new()
         .route("/api/health", get(health))
@@ -198,27 +201,13 @@ fn frontend_dist_dir(state: &SharedState) -> std::path::PathBuf {
         }
     }
     // 3) 兜底：当前目录 src-frontend/dist（尝试 ../）
-    let rel = std::path::PathBuf::from("..").join("src-frontend").join("dist");
+    let rel = std::path::PathBuf::from("..")
+        .join("src-frontend")
+        .join("dist");
     if rel.exists() {
         return rel;
     }
     std::path::PathBuf::from("src-frontend").join("dist")
-}
-
-// ---------- 鉴权中间件 ----------
-
-/// 检查 Bearer token
-fn check_token(state: &SharedState, headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
-    let token = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or_else(|| ApiError::new("unauthorized", "缺少鉴权 token"))?;
-    if token == state.token {
-        Ok(())
-    } else {
-        Err(ApiError::new("unauthorized", "token 无效"))
-    }
 }
 
 /// 从状态取应用（不存在返回 404）
@@ -232,10 +221,7 @@ fn get_app_or_404(state: &SharedState, id: &str) -> Result<App, ApiError> {
 
 // ---------- 端点实现 ----------
 
-async fn health(State(state): State<SharedState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn health() -> Response {
     let os = if cfg!(windows) {
         "windows"
     } else if cfg!(target_os = "macos") {
@@ -252,10 +238,7 @@ async fn health(State(state): State<SharedState>, headers: axum::http::HeaderMap
     .into_response()
 }
 
-async fn status(State(state): State<SharedState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn status(State(state): State<SharedState>) -> Response {
     // 从全局 AppState 读运行状态（与 launch 同一状态源）
     let gstate = state.app_handle.state::<crate::app_state::AppState>();
     let all = gstate.list_running();
@@ -282,10 +265,7 @@ async fn status(State(state): State<SharedState>, headers: axum::http::HeaderMap
     Json(ps).into_response()
 }
 
-async fn list_apps(State(state): State<SharedState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn list_apps(State(state): State<SharedState>) -> Response {
     match state.store.list() {
         Ok(apps) => Json(apps).into_response(),
         Err(e) => err_response(
@@ -297,12 +277,8 @@ async fn list_apps(State(state): State<SharedState>, headers: axum::http::Header
 
 async fn create_app(
     State(state): State<SharedState>,
-    headers: axum::http::HeaderMap,
     Json(input): Json<serde_json::Value>,
 ) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
     // 支持部分字段创建（name/url 必填，其余用默认）
     match App::from_partial(&input) {
         Ok(app) => match state.store.create(app) {
@@ -316,14 +292,7 @@ async fn create_app(
     }
 }
 
-async fn get_app(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn get_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     match get_app_or_404(&state, &id) {
         Ok(app) => Json(app).into_response(),
         Err(e) => err_response(StatusCode::NOT_FOUND, e),
@@ -333,12 +302,8 @@ async fn get_app(
 async fn update_app(
     State(state): State<SharedState>,
     Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
     Json(patch): Json<App>,
 ) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
     match state.store.update(&id, patch) {
         Ok(Some(app)) => Json(app).into_response(),
         Ok(None) => err_response(
@@ -352,14 +317,7 @@ async fn update_app(
     }
 }
 
-async fn delete_app(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn delete_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let app = match get_app_or_404(&state, &id) {
         Ok(app) => app,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
@@ -379,14 +337,7 @@ async fn delete_app(
     }
 }
 
-async fn restore_app(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn restore_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     // 系统应用恢复：管理控制台（is_system）若缺失则重建
     let apps = match state.store.list() {
         Ok(a) => a,
@@ -409,14 +360,7 @@ async fn restore_app(
     }
 }
 
-async fn launch_app(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn launch_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     // 经 app_handle 调用真实 scheduler（创建 WebviewWindow + 钩子 + 驻留）
     match crate::scheduler::launch_by_id(&state.app_handle, &id).await {
         Ok(label) => {
@@ -430,14 +374,7 @@ async fn launch_app(
     }
 }
 
-async fn activate_app(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn activate_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let _app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
@@ -445,14 +382,7 @@ async fn activate_app(
     Json(serde_json::json!({"status": "active"})).into_response()
 }
 
-async fn terminate_app(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn terminate_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let _app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
@@ -467,14 +397,7 @@ async fn terminate_app(
     }
 }
 
-async fn app_status(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn app_status(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let _app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
@@ -492,14 +415,7 @@ async fn app_status(
     .into_response()
 }
 
-async fn identity_summary(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn identity_summary(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
@@ -509,14 +425,7 @@ async fn identity_summary(
     Json(im.summary(&app)).into_response()
 }
 
-async fn create_shortcut(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn create_shortcut(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let _app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
@@ -525,14 +434,7 @@ async fn create_shortcut(
     Json(serde_json::json!({"created": true, "path": ""})).into_response()
 }
 
-async fn remove_shortcut(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Err(e) = check_token(&state, &headers) {
-        return err_response(StatusCode::UNAUTHORIZED, e);
-    }
+async fn remove_shortcut(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let _app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),

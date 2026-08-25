@@ -151,47 +151,26 @@ pub fn run_cli() -> i32 {
 
 // ---------- daemon 发现 ----------
 
-fn load_api_config() -> Option<(u16, String)> {
-    let path = daemon_api_path();
-    let content = std::fs::read_to_string(path).ok()?;
-    let v: Value = serde_json::from_str(&content).ok()?;
-    Some((
-        v.get("port")?.as_u64()? as u16,
-        v.get("token")?.as_str()?.to_string(),
-    ))
-}
-
-fn daemon_api_path() -> std::path::PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("WebDesk")
-        .join("api.json")
-}
-
-fn ensure_daemon() -> Result<(u16, String), String> {
-    if let Some(cfg) = load_api_config() {
-        if ping_daemon(cfg.0, &cfg.1) {
-            return Ok(cfg);
-        }
+fn ensure_daemon() -> Result<u16, String> {
+    const PORT: u16 = 3070;
+    if ping_daemon(PORT) {
+        return Ok(PORT);
     }
     eprintln!("WebDesk daemon 未运行，正在启动…");
     spawn_daemon()?;
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if let Some(cfg) = load_api_config() {
-            if ping_daemon(cfg.0, &cfg.1) {
-                return Ok(cfg);
-            }
+        if ping_daemon(PORT) {
+            return Ok(PORT);
         }
     }
     Err("daemon 启动超时".into())
 }
 
-fn ping_daemon(port: u16, token: &str) -> bool {
+fn ping_daemon(port: u16) -> bool {
     let client = reqwest::blocking::Client::new();
     client
         .get(format!("http://127.0.0.1:{port}/api/health"))
-        .header("Authorization", format!("Bearer {token}"))
         .timeout(std::time::Duration::from_millis(500))
         .send()
         .map(|r| r.status().is_success())
@@ -215,21 +194,18 @@ fn api_url(port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{path}")
 }
 
-fn get_json(port: u16, token: &str, path: &str) -> Result<Value, String> {
+fn get_json(port: u16, path: &str) -> Result<Value, String> {
     let client = reqwest::blocking::Client::new();
     let resp = client
         .get(api_url(port, path))
-        .header("Authorization", format!("Bearer {token}"))
         .send()
         .map_err(|e| format!("请求失败: {e}"))?;
     parse_response(resp)
 }
 
-fn post_json(port: u16, token: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+fn post_json(port: u16, path: &str, body: Option<Value>) -> Result<Value, String> {
     let client = reqwest::blocking::Client::new();
-    let mut req = client
-        .post(api_url(port, path))
-        .header("Authorization", format!("Bearer {token}"));
+    let mut req = client.post(api_url(port, path));
     if let Some(b) = body {
         req = req.json(&b);
     }
@@ -266,7 +242,7 @@ fn cmd_add(
     shell: &str,
     timeout: u64,
 ) -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
+    let port = ensure_daemon()?;
     let url = normalize_url(url)?;
     let body = serde_json::json!({
         "name": name,
@@ -282,7 +258,7 @@ fn cmd_add(
             "blocking": true,
         },
     });
-    let resp = post_json(port, &token, "/api/apps", Some(body))?;
+    let resp = post_json(port, "/api/apps", Some(body))?;
     let id = resp.get("id").and_then(|v| v.as_str()).unwrap_or("?");
     println!("✅ 已添加应用：{name}");
     println!("   id: {id}");
@@ -310,8 +286,8 @@ fn split_hooks(s: &str) -> Vec<String> {
 }
 
 fn cmd_list() -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
-    let apps = get_json(port, &token, "/api/apps")?;
+    let port = ensure_daemon()?;
+    let apps = get_json(port, "/api/apps")?;
     let arr = apps.as_array().ok_or("响应格式错误")?;
     if arr.is_empty() {
         println!("（无应用。用 `webdesk addweb -n 名称 -url 地址` 添加）");
@@ -337,14 +313,14 @@ fn cmd_list() -> Result<(), String> {
             .unwrap_or(false);
         let url = app.get("url").and_then(|v| v.as_str()).unwrap_or("?");
         let sys = if is_system { " [系统]" } else { "" };
-        let status = app_running_state(port, &token, id)?;
+        let status = app_running_state(port, id)?;
         println!("{:4}  {:20}  {:8}  {}{}", id, name, status, url, sys);
     }
     Ok(())
 }
 
-fn app_running_state(port: u16, token: &str, id: &str) -> Result<String, String> {
-    let st = get_json(port, token, &format!("/api/apps/{id}/status"))?;
+fn app_running_state(port: u16, id: &str) -> Result<String, String> {
+    let st = get_json(port, &format!("/api/apps/{id}/status"))?;
     Ok(st
         .get("status")
         .and_then(|v| v.as_str())
@@ -353,18 +329,17 @@ fn app_running_state(port: u16, token: &str, id: &str) -> Result<String, String>
 }
 
 fn cmd_get(id: &str) -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
-    let app = get_json(port, &token, &format!("/api/apps/{id}"))?;
+    let port = ensure_daemon()?;
+    let app = get_json(port, &format!("/api/apps/{id}"))?;
     println!("{}", serde_json::to_string_pretty(&app).unwrap_or_default());
     Ok(())
 }
 
 fn cmd_remove(id: &str) -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
+    let port = ensure_daemon()?;
     let client = reqwest::blocking::Client::new();
     let resp = client
         .delete(api_url(port, &format!("/api/apps/{id}")))
-        .header("Authorization", format!("Bearer {token}"))
         .send()
         .map_err(|e| format!("请求失败: {e}"))?;
     if resp.status().is_success() {
@@ -376,8 +351,8 @@ fn cmd_remove(id: &str) -> Result<(), String> {
 }
 
 fn cmd_launch(id: &str) -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
-    let resp = post_json(port, &token, &format!("/api/apps/{id}/launch"), None)?;
+    let port = ensure_daemon()?;
+    let resp = post_json(port, &format!("/api/apps/{id}/launch"), None)?;
     let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
     if status == "running" {
         println!("✅ 应用 {id} 已启动");
@@ -388,32 +363,32 @@ fn cmd_launch(id: &str) -> Result<(), String> {
 }
 
 fn cmd_stop(id: &str) -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
-    let resp = post_json(port, &token, &format!("/api/apps/{id}/terminate"), None)?;
+    let port = ensure_daemon()?;
+    let resp = post_json(port, &format!("/api/apps/{id}/terminate"), None)?;
     let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
     println!("ℹ️ 应用 {id}: {status}");
     Ok(())
 }
 
 fn cmd_activate(id: &str) -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
-    let resp = post_json(port, &token, &format!("/api/apps/{id}/activate"), None)?;
+    let port = ensure_daemon()?;
+    let resp = post_json(port, &format!("/api/apps/{id}/activate"), None)?;
     let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
     println!("ℹ️ 应用 {id}: {status}");
     Ok(())
 }
 
 fn cmd_app_status(id: &str) -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
-    let st = get_json(port, &token, &format!("/api/apps/{id}/status"))?;
+    let port = ensure_daemon()?;
+    let st = get_json(port, &format!("/api/apps/{id}/status"))?;
     let status = st.get("status").and_then(|v| v.as_str()).unwrap_or("?");
     println!("应用 {id} 状态: {status}");
     Ok(())
 }
 
 fn cmd_shortcut(id: &str) -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
-    let resp = post_json(port, &token, &format!("/api/apps/{id}/shortcut"), None)?;
+    let port = ensure_daemon()?;
+    let resp = post_json(port, &format!("/api/apps/{id}/shortcut"), None)?;
     let created = resp
         .get("created")
         .and_then(|v| v.as_bool())
@@ -427,8 +402,8 @@ fn cmd_shortcut(id: &str) -> Result<(), String> {
 }
 
 fn cmd_platform_status() -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
-    let st = get_json(port, &token, "/api/status")?;
+    let port = ensure_daemon()?;
+    let st = get_json(port, "/api/status")?;
     println!("WebDesk 平台状态");
     println!(
         "  版本: {}",
@@ -460,8 +435,8 @@ fn json_str_list(v: Option<&Value>) -> String {
 }
 
 fn cmd_console() -> Result<(), String> {
-    let (port, token) = ensure_daemon()?;
-    let resp = post_json(port, &token, "/api/apps/console/launch", None)?;
+    let port = ensure_daemon()?;
+    let resp = post_json(port, "/api/apps/console/launch", None)?;
     let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
     println!("ℹ️ 控制台: {status}");
     Ok(())

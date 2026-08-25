@@ -192,12 +192,7 @@ function opt(value: string, label: string): HTMLOptionElement {
 // ---------- 启动 ----------
 
 (async function bootstrap() {
-  const ok = await initApi();
-  if (!ok) {
-    // 浏览器调试兜底：手动输入端口/token
-    const port = prompt("输入管理 API 端口 (浏览器调试)") || "1420";
-    const token = prompt("输入管理 token") || "";
-    setApiManual(Number(port), token);
-  }
+  // 固定 127.0.0.1:3070，无鉴权，直接连接
+  await initApi();
   render();
 })();
