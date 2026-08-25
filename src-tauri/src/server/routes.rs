@@ -302,18 +302,33 @@ async fn get_app(State(state): State<SharedState>, Path(id): Path<String>) -> Re
 async fn update_app(
     State(state): State<SharedState>,
     Path(id): Path<String>,
-    Json(patch): Json<App>,
+    Json(mut patch): Json<serde_json::Value>,
 ) -> Response {
-    match state.store.update(&id, patch) {
-        Ok(Some(app)) => Json(app).into_response(),
-        Ok(None) => err_response(
-            StatusCode::NOT_FOUND,
-            ApiError::new("not_found", "应用不存在"),
-        ),
-        Err(e) => err_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ApiError::new("internal", format!("更新应用失败: {e}")),
-        ),
+    // 支持部分字段更新（前端只发修改的字段）。
+    // from_partial 要求 url 必填，但 update 可能只改 name 等——缺 url 时用现有值补上。
+    if patch
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.is_empty())
+        .unwrap_or(true)
+    {
+        if let Ok(Some(existing)) = state.store.get(&id) {
+            patch["url"] = serde_json::Value::String(existing.url);
+        }
+    }
+    match App::from_partial(&patch) {
+        Ok(app) => match state.store.update(&id, app) {
+            Ok(Some(app)) => Json(app).into_response(),
+            Ok(None) => err_response(
+                StatusCode::NOT_FOUND,
+                ApiError::new("not_found", "应用不存在"),
+            ),
+            Err(e) => err_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiError::new("internal", format!("更新应用失败: {e}")),
+            ),
+        },
+        Err(e) => err_response(StatusCode::BAD_REQUEST, ApiError::new("invalid_input", e)),
     }
 }
 

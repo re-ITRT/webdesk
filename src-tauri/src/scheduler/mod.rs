@@ -122,10 +122,17 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
     let app_id = app.id.clone();
     let app_name = app.name.clone();
 
-    let window = WebviewWindowBuilder::new(handle, label, WebviewUrl::External(url))
+    // 设置窗口图标（任务栏图标与 WebDesk 统一）
+    let mut builder = WebviewWindowBuilder::new(handle, label, WebviewUrl::External(url))
         .title(&app_name)
         .inner_size(1024.0, 720.0)
-        .visible(true)
+        .visible(true);
+    if let Some(icon) = handle.default_window_icon() {
+        builder = builder
+            .icon(icon.clone())
+            .map_err(|e| anyhow::anyhow!("设置窗口图标失败: {e}"))?;
+    }
+    let window = builder
         .build()
         .map_err(|e| anyhow::anyhow!("创建窗口失败: {e}"))?;
 
