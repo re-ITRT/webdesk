@@ -230,6 +230,27 @@ pub fn terminate_app(handle: &AppHandle, id: &str) -> anyhow::Result<serde_json:
     Ok(serde_json::json!({"status": "terminated"}))
 }
 
+/// 重新加载应用（配置修改后立即生效）：
+/// 销毁现有窗口，重新创建（应用新的 URL / close_action / 注入等）。
+/// 若应用未运行，则直接启动。
+pub async fn reload_app(handle: &AppHandle, id: &str) -> anyhow::Result<serde_json::Value> {
+    let state = handle.state::<AppState>();
+    let label = window_label(id);
+
+    // 若窗口存在，先销毁（应用新配置）
+    if let Some(win) = handle.get_webview_window(&label) {
+        let _ = win.destroy();
+        state.mark_stopped(id);
+        log::info!("[scheduler] 配置已修改，销毁旧窗口: {label}");
+    }
+
+    // 重新启动（应用新配置）
+    match launch_by_id(handle, id).await {
+        Ok(_) => Ok(serde_json::json!({"status": "reloaded"})),
+        Err(e) => Err(e),
+    }
+}
+
 /// Tauri command：启动应用（异步，避免在同步命令中创建窗口导致的死锁）
 #[tauri::command]
 pub async fn launch_app_cmd(handle: tauri::AppHandle, id: String) -> Result<String, String> {

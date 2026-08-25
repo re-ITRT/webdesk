@@ -305,20 +305,38 @@ async fn update_app(
     Json(mut patch): Json<serde_json::Value>,
 ) -> Response {
     // 支持部分字段更新（前端只发修改的字段）。
-    // from_partial 要求 url 必填，但 update 可能只改 name 等——缺 url 时用现有值补上。
-    if patch
-        .get("url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.is_empty())
-        .unwrap_or(true)
-    {
-        if let Ok(Some(existing)) = state.store.get(&id) {
+    // from_partial 要求 name/url 必填，但 update 可能只改部分字段——缺时用现有值补上。
+    if let Ok(Some(existing)) = state.store.get(&id) {
+        if patch
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.is_empty())
+            .unwrap_or(true)
+        {
+            patch["name"] = serde_json::Value::String(existing.name);
+        }
+        if patch
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.is_empty())
+            .unwrap_or(true)
+        {
             patch["url"] = serde_json::Value::String(existing.url);
         }
     }
     match App::from_partial(&patch) {
         Ok(app) => match state.store.update(&id, app) {
-            Ok(Some(app)) => Json(app).into_response(),
+            Ok(Some(app)) => {
+                // 配置已更新：若应用正在运行，立即重载窗口应用新配置
+                let handle = state.app_handle.clone();
+                let app_id = id.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = crate::scheduler::reload_app(&handle, &app_id).await {
+                        log::warn!("[update] 重载应用 {app_id} 失败: {e}");
+                    }
+                });
+                Json(app).into_response()
+            }
             Ok(None) => err_response(
                 StatusCode::NOT_FOUND,
                 ApiError::new("not_found", "应用不存在"),
