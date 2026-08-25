@@ -93,10 +93,52 @@ fn kill_tree(pid: u32) {
 }
 
 /// 执行单个钩子命令（支持超时强制终止）
+///
+/// 若命令含多行（bat 代码），自动写入 WebDesk 钩子目录的 .bat 文件再执行，
+/// 以便用户直接在钩子里填 bat 脚本（如 `@echo off` + `start ...` 后台启动服务）。
 pub fn run_hook(event: &str, command: &str, options: &HookOptions) -> HookResult {
+    let start = std::time::Instant::now();
+
+    // 判断是否为多行 bat 代码（含换行或 @echo off）
+    let is_bat_code = command.contains('\n')
+        || command.contains("\r\n")
+        || command.trim_start().starts_with("@echo off");
+    let cmd_to_run: String;
+    let mut temp_bat: Option<std::path::PathBuf> = None;
+
+    if is_bat_code && options.shell.as_str() == "cmd" {
+        // 写入 .bat 文件
+        let dir = bat_dir();
+        let path = dir.join(format!("{event}_{}.bat", std::process::id()));
+        if std::fs::write(&path, command).is_ok() {
+            temp_bat = Some(path.clone());
+            cmd_to_run = path.to_string_lossy().to_string();
+            log::info!("[hooks] 钩子[{event}] 识别为 bat 代码，已落盘: {path:?}");
+        } else {
+            cmd_to_run = command.to_string();
+        }
+    } else {
+        cmd_to_run = command.to_string();
+    }
+
+    let result = run_hook_inner(event, &cmd_to_run, options, start);
+
+    // 清理临时 bat
+    if let Some(p) = temp_bat {
+        let _ = std::fs::remove_file(&p);
+    }
+    result
+}
+
+/// 实际执行钩子
+fn run_hook_inner(
+    event: &str,
+    command: &str,
+    options: &HookOptions,
+    start: std::time::Instant,
+) -> HookResult {
     let shell = options.shell.as_str();
     let (program, args) = shell_command(shell, command);
-    let start = std::time::Instant::now();
 
     let result = match Command::new(program)
         .args(&args)
@@ -150,6 +192,16 @@ pub fn run_hook(event: &str, command: &str, options: &HookOptions) -> HookResult
         start.elapsed()
     );
     result
+}
+
+/// 钩子 bat 文件目录（WebDesk 数据目录下 hooks），确保存在
+fn bat_dir() -> std::path::PathBuf {
+    let dir = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("WebDesk")
+        .join("hooks");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 /// 带超时的等待（返回是否超时）

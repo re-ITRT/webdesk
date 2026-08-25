@@ -372,8 +372,8 @@ function openModal(app: App | null): void {
         opt("background", t("dwell")),
         opt("quit", t("quit")),
       ]),
-      field(t("preHook"), "f-pre", (app?.hooks.pre_launch || []).join("; ")),
-      field(t("postHook"), "f-post", (app?.hooks.post_exit || []).join("; ")),
+      field(t("preHook"), "f-pre", (app?.hooks.pre_launch || []).join("\n"), [], true),
+      field(t("postHook"), "f-post", (app?.hooks.post_exit || []).join("\n"), [], true),
       field(t("injectCss"), "f-css", app?.injections.css || "", [], true),
       field(t("injectJs"), "f-js", app?.injections.js || "", [], true),
       h("div", { class: "modal-actions" }, [
@@ -389,8 +389,8 @@ function openModal(app: App | null): void {
       url: val("f-url"),
       close_action: val("f-close") as "background" | "quit",
       hooks: {
-        pre_launch: val("f-pre").split(";").map((s) => s.trim()).filter(Boolean),
-        post_exit: val("f-post").split(";").map((s) => s.trim()).filter(Boolean),
+        pre_launch: (val("f-pre") || "").trim() ? [val("f-pre")] : [],
+        post_exit: (val("f-post") || "").trim() ? [val("f-post")] : [],
       },
       injections: { css: val("f-css"), js: val("f-js"), timing: "document_idle" },
     };
