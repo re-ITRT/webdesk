@@ -363,7 +363,9 @@ pub fn create_shortcut(
 }
 
 /// 从 URL 下载图标到本地数据目录，返回本地路径。
-/// 支持 .ico/.png/.svg 等（Windows .lnk 需本地文件）。
+/// 支持：
+/// - 直接图标文件（.ico/.png/.svg）→ 直接下载
+/// - 网页 URL → 先解析 HTML 找 `<link rel="icon">`，找不到用 `{url}/favicon.ico`
 ///
 /// 注意：不能在此用 reqwest::blocking——daemon 的 HTTP handler 运行在
 /// tokio async 上下文，blocking 会 panic（"Cannot drop a runtime in a
@@ -375,8 +377,11 @@ fn download_icon(url: &str) -> anyhow::Result<String> {
         .join("icons");
     std::fs::create_dir_all(&data_dir)?;
 
-    // 从 URL 推断文件名（取路径最后一段，否则用 favicon.ico）
-    let filename = url
+    // 解析出最终图标 URL（网页→解析 favicon；图标文件→直接）
+    let icon_url = resolve_icon_url(url)?;
+
+    // 从图标 URL 推断文件名
+    let filename = icon_url
         .split('/')
         .next_back()
         .filter(|s| !s.is_empty() && s.contains('.'))
@@ -384,19 +389,100 @@ fn download_icon(url: &str) -> anyhow::Result<String> {
     let dest = data_dir.join(filename);
 
     // 用系统 curl 下载（-L 跟随重定向，-s 静默，-o 输出文件，--max-time 限时）
-    let out = std::process::Command::new("curl")
+    let out = std::process::Command::new("curl.exe")
         .args(["-L", "-s", "--max-time", "10", "-o"])
         .arg(&dest)
-        .arg(url)
+        .arg(&icon_url)
         .output()
         .map_err(|e| anyhow::anyhow!("调用 curl 失败: {e}"))?;
 
     if !dest.exists() || dest.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
-        anyhow::bail!("下载图标失败（curl exit={:?}）: {url}", out.status.code());
+        anyhow::bail!(
+            "下载图标失败（curl exit={:?}）: {icon_url}",
+            out.status.code()
+        );
     }
 
-    log::info!("[platform] 已下载图标: {url} -> {dest:?}");
+    log::info!("[platform] 已下载图标: {icon_url} -> {dest:?}");
     Ok(dest.to_string_lossy().to_string())
+}
+
+/// 解析最终图标 URL：
+/// - 若是网页（不是常见图标扩展名）→ 抓 HTML 找 `<link rel="icon">`，否则 `{origin}/favicon.ico`
+/// - 若是图标文件 → 原样返回
+fn resolve_icon_url(url: &str) -> anyhow::Result<String> {
+    // 判断是否直接是图标文件（常见扩展名）
+    let lower = url.to_lowercase();
+    let is_icon_file = [".ico", ".png", ".svg", ".jpg", ".jpeg", ".webp", ".gif"]
+        .iter()
+        .any(|ext| lower.contains(ext));
+
+    if is_icon_file {
+        return Ok(url.to_string());
+    }
+
+    // 网页 → 抓 HTML 找 favicon
+    let html = fetch_text(url)?;
+    // 匹配 <link ... rel="icon" ... href="..." > 或 rel="shortcut icon"
+    let re =
+        regex::Regex::new(r#"<link[^>]+rel=["'][^"']*icon[^"']*["'][^>]*href=["']([^"']+)["']"#)
+            .map_err(|e| anyhow::anyhow!("正则编译失败: {e}"))?;
+
+    if let Some(caps) = re.captures(&html) {
+        let href = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        if !href.is_empty() {
+            return Ok(absolutize_url(url, href));
+        }
+    }
+
+    // 兜底：{origin}/favicon.ico
+    Ok(format!("{}/favicon.ico", origin(url)))
+}
+
+/// 抓取 URL 文本内容（用 curl，限时）
+fn fetch_text(url: &str) -> anyhow::Result<String> {
+    let out = std::process::Command::new("curl.exe")
+        .args(["-L", "-s", "--max-time", "10"])
+        .arg(url)
+        .output()
+        .map_err(|e| anyhow::anyhow!("调用 curl 失败: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "抓取网页失败: {url} (curl exit={:?}, stderr={})",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// 把相对 href 转成绝对 URL
+fn absolutize_url(base: &str, href: &str) -> String {
+    if href.starts_with("http://") || href.starts_with("https://") || href.starts_with("//") {
+        if href.starts_with("//") {
+            // 协议相对
+            format!("https:{href}")
+        } else {
+            href.to_string()
+        }
+    } else if href.starts_with('/') {
+        format!("{}{href}", origin(base))
+    } else {
+        // 相对路径：{base 目录}/{href}
+        let base_trimmed = base.trim_end_matches('/');
+        format!("{base_trimmed}/{href}")
+    }
+}
+
+/// 提取 URL 的 origin（scheme://host[:port]）
+fn origin(url: &str) -> String {
+    let parts: Vec<&str> = url.split("://").collect();
+    if parts.len() >= 2 {
+        let host_port = parts[1].split('/').next().unwrap_or("");
+        format!("{}://{host_port}", parts[0])
+    } else {
+        url.to_string()
+    }
 }
 
 /// Windows：PowerShell WScript.Shell 建 .lnk

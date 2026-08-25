@@ -436,16 +436,26 @@ async fn create_shortcut(
     };
     // 可选图标：body 里的 "icon" 字段（.ico/.exe 路径，或 http(s) URL）
     let icon = body.and_then(|Json(v)| v.get("icon").and_then(|i| i.as_str()).map(String::from));
-    // 用平台能力真实创建桌面快捷方式：目标 = 当前 exe + --launch=<id>
-    match crate::platform::create_shortcut(&app.name, &id, icon.as_deref()) {
-        Ok(path) => Json(serde_json::json!({
+    let name = app.name.clone();
+    // 用平台能力真实创建桌面快捷方式（在独立线程池执行，避免阻塞 axum 响应线程，
+    // 否则内部的 curl 访问本服务时自锁超时）
+    match tokio::task::spawn_blocking(move || {
+        crate::platform::create_shortcut(&name, &id, icon.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(path)) => Json(serde_json::json!({
             "created": true,
             "path": path.to_string_lossy().to_string()
         }))
         .into_response(),
-        Err(e) => err_response(
+        Ok(Err(e)) => err_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::new("internal", format!("创建快捷方式失败: {e}")),
+        ),
+        Err(e) => err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::new("internal", format!("任务执行失败: {e}")),
         ),
     }
 }

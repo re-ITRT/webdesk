@@ -104,7 +104,8 @@ async function handleAction(act: string, id: string): Promise<void> {
     } else if (act === "delete") {
       if (confirm("确定删除该应用？")) await api.deleteApp(id);
     } else if (act === "shortcut") {
-      shortcutDialog(id);
+      const app = await api.getApp(id);
+      shortcutDialog(app);
       return; // 不 refreshAll（对话框自己处理）
     } else if (act === "unshortcut") {
       if (confirm("确定移除桌面快捷方式？")) await api.removeShortcut(id);
@@ -115,8 +116,8 @@ async function handleAction(act: string, id: string): Promise<void> {
   }
 }
 
-/** 快捷方式图标选择对话框：默认 / 本地 .ico / 从 URL 获取 */
-function shortcutDialog(id: string): void {
+/** 快捷方式图标选择对话框：默认 / 本地 .ico / 自动抓取网页图标 */
+function shortcutDialog(app: App): void {
   const modal = document.getElementById("modal")!;
   modal.classList.remove("hidden");
   modal.innerHTML = "";
@@ -128,16 +129,16 @@ function shortcutDialog(id: string): void {
         h("select", { id: "sc-icon-type" }, [
           opt("default", "默认图标"),
           opt("local", "选择本地 .ico 文件"),
-          opt("url", "从 URL 获取"),
+          opt("auto", "自动从网页获取图标"),
         ]),
       ]),
       h("div", { id: "sc-local-wrap", class: "field hidden" }, [
         h("label", { for: "sc-local" }, [".ico 文件路径"]),
         h("input", { id: "sc-local", placeholder: "C:\\path\\to\\icon.ico" }),
       ]),
-      h("div", { id: "sc-url-wrap", class: "field hidden" }, [
-        h("label", { for: "sc-url" }, ["图标 URL"]),
-        h("input", { id: "sc-url", placeholder: "https://example.com/favicon.ico" }),
+      h("div", { class: "field", id: "sc-auto-hint" }, [
+        h("label", {}, ["将自动抓取该应用的网页图标"]),
+        h("div", { class: "muted" }, [`${app.url}`]),
       ]),
       h("div", { class: "modal-actions" }, [
         h("button", { id: "sc-ok" }, ["创建"]),
@@ -148,21 +149,22 @@ function shortcutDialog(id: string): void {
 
   const typeSel = document.getElementById("sc-icon-type") as HTMLSelectElement;
   const localWrap = document.getElementById("sc-local-wrap")!;
-  const urlWrap = document.getElementById("sc-url-wrap")!;
+  const autoHint = document.getElementById("sc-auto-hint")!;
   typeSel.onchange = () => {
     localWrap.classList.toggle("hidden", typeSel.value !== "local");
-    urlWrap.classList.toggle("hidden", typeSel.value !== "url");
+    autoHint.classList.toggle("hidden", typeSel.value !== "auto");
   };
   document.getElementById("sc-cancel")!.onclick = () => modal.classList.add("hidden");
   document.getElementById("sc-ok")!.onclick = async () => {
     let icon: string | undefined;
     if (typeSel.value === "local") {
       icon = (document.getElementById("sc-local") as HTMLInputElement).value.trim() || undefined;
-    } else if (typeSel.value === "url") {
-      icon = (document.getElementById("sc-url") as HTMLInputElement).value.trim() || undefined;
+    } else if (typeSel.value === "auto") {
+      // 自动抓取：传应用 URL，后端解析其 favicon
+      icon = app.url;
     }
     try {
-      const r = await api.createShortcut(id, icon);
+      const r = await api.createShortcut(app.id, icon);
       modal.classList.add("hidden");
       alert(r.created ? "✅ 已创建桌面快捷方式" : "快捷方式创建失败");
     } catch (e) {
