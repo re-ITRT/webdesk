@@ -425,13 +425,29 @@ async fn identity_summary(State(state): State<SharedState>, Path(id): Path<Strin
     Json(im.summary(&app)).into_response()
 }
 
-async fn create_shortcut(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
-    let _app = match get_app_or_404(&state, &id) {
+async fn create_shortcut(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    body: Option<axum::extract::Json<serde_json::Value>>,
+) -> Response {
+    let app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
     };
-    // M1 起调用 platform 建 .lnk；M0 占位
-    Json(serde_json::json!({"created": true, "path": ""})).into_response()
+    // 可选图标：body 里的 "icon" 字段（.ico/.exe 路径，或 http(s) URL）
+    let icon = body.and_then(|Json(v)| v.get("icon").and_then(|i| i.as_str()).map(String::from));
+    // 用平台能力真实创建桌面快捷方式：目标 = 当前 exe + --launch=<id>
+    match crate::platform::create_shortcut(&app.name, &id, icon.as_deref()) {
+        Ok(path) => Json(serde_json::json!({
+            "created": true,
+            "path": path.to_string_lossy().to_string()
+        }))
+        .into_response(),
+        Err(e) => err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::new("internal", format!("创建快捷方式失败: {e}")),
+        ),
+    }
 }
 
 async fn remove_shortcut(State(state): State<SharedState>, Path(id): Path<String>) -> Response {

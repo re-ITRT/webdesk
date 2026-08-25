@@ -70,6 +70,7 @@ function renderGrid(apps: App[], status: PlatformStatus): void {
         h("button", { "data-act": "launch", "data-id": app.id }, running ? ["激活"] : ["启动"]),
         h("button", { "data-act": "terminate", "data-id": app.id, disabled: !running && !background ? "true" : "" }, ["终止"]),
         h("button", { "data-act": "edit", "data-id": app.id }, ["编辑"]),
+        h("button", { "data-act": "shortcut", "data-id": app.id, title: "创建桌面快捷方式" }, ["桌面快捷方式"]),
         app.isSystem ? h("span", {}) : h("button", { "data-act": "delete", "data-id": app.id, class: "danger" }, ["删除"]),
       ]),
     ]);
@@ -102,11 +103,72 @@ async function handleAction(act: string, id: string): Promise<void> {
       openModal(app);
     } else if (act === "delete") {
       if (confirm("确定删除该应用？")) await api.deleteApp(id);
+    } else if (act === "shortcut") {
+      shortcutDialog(id);
+      return; // 不 refreshAll（对话框自己处理）
+    } else if (act === "unshortcut") {
+      if (confirm("确定移除桌面快捷方式？")) await api.removeShortcut(id);
     }
     refreshAll();
   } catch (e) {
     alert(`操作失败: ${(e as Error).message}`);
   }
+}
+
+/** 快捷方式图标选择对话框：默认 / 本地 .ico / 从 URL 获取 */
+function shortcutDialog(id: string): void {
+  const modal = document.getElementById("modal")!;
+  modal.classList.remove("hidden");
+  modal.innerHTML = "";
+  modal.append(
+    h("div", { class: "modal-content" }, [
+      h("h2", {}, ["创建桌面快捷方式"]),
+      h("div", { class: "field" }, [
+        h("label", {}, ["图标来源"]),
+        h("select", { id: "sc-icon-type" }, [
+          opt("default", "默认图标"),
+          opt("local", "选择本地 .ico 文件"),
+          opt("url", "从 URL 获取"),
+        ]),
+      ]),
+      h("div", { id: "sc-local-wrap", class: "field hidden" }, [
+        h("label", { for: "sc-local" }, [".ico 文件路径"]),
+        h("input", { id: "sc-local", placeholder: "C:\\path\\to\\icon.ico" }),
+      ]),
+      h("div", { id: "sc-url-wrap", class: "field hidden" }, [
+        h("label", { for: "sc-url" }, ["图标 URL"]),
+        h("input", { id: "sc-url", placeholder: "https://example.com/favicon.ico" }),
+      ]),
+      h("div", { class: "modal-actions" }, [
+        h("button", { id: "sc-ok" }, ["创建"]),
+        h("button", { id: "sc-cancel" }, ["取消"]),
+      ]),
+    ]),
+  );
+
+  const typeSel = document.getElementById("sc-icon-type") as HTMLSelectElement;
+  const localWrap = document.getElementById("sc-local-wrap")!;
+  const urlWrap = document.getElementById("sc-url-wrap")!;
+  typeSel.onchange = () => {
+    localWrap.classList.toggle("hidden", typeSel.value !== "local");
+    urlWrap.classList.toggle("hidden", typeSel.value !== "url");
+  };
+  document.getElementById("sc-cancel")!.onclick = () => modal.classList.add("hidden");
+  document.getElementById("sc-ok")!.onclick = async () => {
+    let icon: string | undefined;
+    if (typeSel.value === "local") {
+      icon = (document.getElementById("sc-local") as HTMLInputElement).value.trim() || undefined;
+    } else if (typeSel.value === "url") {
+      icon = (document.getElementById("sc-url") as HTMLInputElement).value.trim() || undefined;
+    }
+    try {
+      const r = await api.createShortcut(id, icon);
+      modal.classList.add("hidden");
+      alert(r.created ? "✅ 已创建桌面快捷方式" : "快捷方式创建失败");
+    } catch (e) {
+      alert(`创建失败: ${(e as Error).message}`);
+    }
+  };
 }
 
 function openModal(app: App | null): void {

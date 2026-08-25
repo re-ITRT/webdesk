@@ -318,19 +318,33 @@ pub fn current_exe() -> anyhow::Result<PathBuf> {
 /// 创建桌面快捷方式
 ///
 /// - Windows：PowerShell COM（WScript.Shell）建 `.lnk`，Target 指向当前 exe，
-///   Arguments 为 `--launch=<launch_arg>`。
+///   Arguments 为 `--launch=<launch_arg>`。若 `icon` 提供（.ico/.exe 路径），
+///   则设置 `IconLocation`。
 /// - macOS：osascript 建 alias。
 /// - Linux：写 `.desktop` 文件。
 ///
 /// 返回创建的完整路径。
-pub fn create_shortcut(app_name: &str, launch_arg: &str) -> anyhow::Result<PathBuf> {
+pub fn create_shortcut(
+    app_name: &str,
+    launch_arg: &str,
+    icon: Option<&str>,
+) -> anyhow::Result<PathBuf> {
     let desktop =
         dirs::desktop_dir().ok_or_else(|| anyhow::anyhow!("无法定位桌面目录（desktop_dir）"))?;
     let dest = desktop.join(shortcut_filename(app_name));
 
+    // 若 icon 是 http(s) URL，先下载到本地数据目录再使用
+    // （Windows .lnk 的 IconLocation 需要本地路径）
+    let resolved_icon = match icon {
+        Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
+            Some(download_icon(url)?)
+        }
+        other => other.map(String::from),
+    };
+
     #[cfg(target_os = "windows")]
     {
-        create_shortcut_windows(&dest, launch_arg)?;
+        create_shortcut_windows(&dest, launch_arg, resolved_icon.as_deref())?;
     }
     #[cfg(target_os = "macos")]
     {
@@ -348,19 +362,70 @@ pub fn create_shortcut(app_name: &str, launch_arg: &str) -> anyhow::Result<PathB
     Ok(dest)
 }
 
+/// 从 URL 下载图标到本地数据目录，返回本地路径。
+/// 支持 .ico/.png/.svg 等（Windows .lnk 需本地文件）。
+///
+/// 注意：不能在此用 reqwest::blocking——daemon 的 HTTP handler 运行在
+/// tokio async 上下文，blocking 会 panic（"Cannot drop a runtime in a
+/// context where blocking is not allowed"）。改用系统 curl（Win10+ 自带）。
+fn download_icon(url: &str) -> anyhow::Result<String> {
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| anyhow::anyhow!("无法定位数据目录"))?
+        .join("WebDesk")
+        .join("icons");
+    std::fs::create_dir_all(&data_dir)?;
+
+    // 从 URL 推断文件名（取路径最后一段，否则用 favicon.ico）
+    let filename = url
+        .split('/')
+        .next_back()
+        .filter(|s| !s.is_empty() && s.contains('.'))
+        .unwrap_or("favicon.ico");
+    let dest = data_dir.join(filename);
+
+    // 用系统 curl 下载（-L 跟随重定向，-s 静默，-o 输出文件，--max-time 限时）
+    let out = std::process::Command::new("curl")
+        .args(["-L", "-s", "--max-time", "10", "-o"])
+        .arg(&dest)
+        .arg(url)
+        .output()
+        .map_err(|e| anyhow::anyhow!("调用 curl 失败: {e}"))?;
+
+    if !dest.exists() || dest.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
+        anyhow::bail!("下载图标失败（curl exit={:?}）: {url}", out.status.code());
+    }
+
+    log::info!("[platform] 已下载图标: {url} -> {dest:?}");
+    Ok(dest.to_string_lossy().to_string())
+}
+
 /// Windows：PowerShell WScript.Shell 建 .lnk
 #[cfg(target_os = "windows")]
-fn create_shortcut_windows(dest: &std::path::Path, launch_arg: &str) -> anyhow::Result<()> {
+fn create_shortcut_windows(
+    dest: &std::path::Path,
+    launch_arg: &str,
+    icon: Option<&str>,
+) -> anyhow::Result<()> {
     let exe = current_exe()?;
     let exe_str = exe.to_string_lossy().replace('\\', "\\\\");
     let dest_str = dest.to_string_lossy().replace('\\', "\\\\");
     let arg_str = format!("--launch={launch_arg}");
+
+    // 图标设置（可选）：$s.IconLocation = '路径,0'
+    let icon_line = match icon {
+        Some(ico) if !ico.is_empty() => {
+            let ico_esc = ico.replace('\\', "\\\\");
+            format!("$s.IconLocation = '{ico_esc},0'; ")
+        }
+        _ => String::new(),
+    };
 
     let script = format!(
         "$ws = New-Object -ComObject WScript.Shell; \
          $s = $ws.CreateShortcut('{dest_str}'); \
          $s.TargetPath = '{exe_str}'; \
          $s.Arguments = '{arg_str}'; \
+         {icon_line}\
          $s.WorkingDirectory = '{exe_str_dir}'; \
          $s.Save()",
         exe_str_dir = exe
@@ -496,7 +561,7 @@ pub fn autostart_enabled<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<bool>
 /// 创建桌面快捷方式（Tauri command）
 #[tauri::command]
 pub fn create_shortcut_cmd(app_name: String, launch_arg: String) -> Result<String, String> {
-    create_shortcut(&app_name, &launch_arg)
+    create_shortcut(&app_name, &launch_arg, None)
         .map(|p| p.to_string_lossy().to_string())
         .map_err(|e| e.to_string())
 }

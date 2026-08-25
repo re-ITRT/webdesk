@@ -95,4 +95,11 @@ export const api = {
     request<{ status: string }>(`/api/apps/${id}/terminate`, { method: "POST" }),
   appStatus: (id: string) =>
     request<{ id: string; status: string }>(`/api/apps/${id}/status`),
+  createShortcut: (id: string, icon?: string) =>
+    request<{ created: boolean; path?: string }>(`/api/apps/${id}/shortcut`, {
+      method: "POST",
+      body: JSON.stringify(icon ? { icon } : {}),
+    }),
+  removeShortcut: (id: string) =>
+    request<{ removed: boolean }>(`/api/apps/${id}/shortcut`, { method: "DELETE" }),
 };
