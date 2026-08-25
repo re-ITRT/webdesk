@@ -1,32 +1,30 @@
 // WebDesk 管理 API 客户端
-//
-// 契约：docs/design/api-contract.md
-// 所有请求带 Bearer token（从 Tauri IPC 获取；Web 兜底让用户输入）。
+// 字段名与后端 API（snake_case）严格对齐。
 
 export interface App {
   id: string;
   name: string;
   url: string;
-  runtimeProfile: "system" | "pinned";
-  closeAction: "background" | "quit";
-  hooks: { preLaunch: string[]; postExit: string[] };
-  hookOptions: { shell: "cmd" | "powershell" | "wsl" | "sh"; timeoutMs: number; blocking: boolean };
-  uiControls: { addressBar: boolean; navButtons: boolean; refresh: boolean };
+  runtime_profile: "system" | "pinned";
+  close_action: "background" | "quit";
+  hooks: { pre_launch: string[]; post_exit: string[] };
+  hook_options: { shell: string; timeout_ms: number; blocking: boolean };
+  ui_controls: { address_bar: boolean; nav_buttons: boolean; refresh: boolean };
   injections: { css: string; js: string; timing: "document_start" | "document_idle" };
   extensions: string[];
-  isSystem: boolean;
-  launchOnBoot: boolean;
+  is_system: boolean;
+  launch_on_boot: boolean;
   tags: string[];
-  createdAt: string;
-  updatedAt: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface PlatformStatus {
   running: string[];
   background: string[];
   version: string;
-  uptimeSec: number;
-  memoryKb: number;
+  uptime_sec: number;
+  memory_kb: number;
   port: number;
 }
 
@@ -42,10 +40,6 @@ let apiPort = 0;
 /** 固定端口（用户指定） */
 const FIXED_PORT = 3070;
 
-/**
- * 初始化 API 配置。
- * 固定 127.0.0.1:3070，无鉴权（仅本机，不可修改）。
- */
 export async function initApi(): Promise<boolean> {
   apiPort = FIXED_PORT;
   return true;

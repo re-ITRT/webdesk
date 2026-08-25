@@ -202,7 +202,7 @@ async function refreshAll(): Promise<void> {
   grid.innerHTML = "";
   try {
     const [status, apps] = await Promise.all([api.status(), api.listApps()]);
-    statusEl.textContent = `${t("version")} ${status.version} · ${t("running")} ${status.running.length} · ${t("background")} ${status.background.length} · ${t("port")} ${status.port} · ${t("memory")} ${(status.memoryKb / 1024).toFixed(1)} MB`;
+    statusEl.textContent = `${t("version")} ${status.version} · ${t("running")} ${status.running.length} · ${t("background")} ${status.background.length} · ${t("port")} ${status.port} · ${t("memory")} ${(status.memory_kb / 1024).toFixed(1)} MB`;
     renderGrid(apps, status);
   } catch (e) {
     statusEl.textContent = `${t("connectFail")}: ${(e as Error).message}`;
@@ -217,23 +217,23 @@ function renderGrid(apps: App[], status: PlatformStatus): void {
     const stateLabel = running ? t("running") : background ? t("background") : t("stopped");
     const favicon = faviconUrl(app.url);
 
-    const card = h("div", { class: `card ${app.isSystem ? "system" : ""}` }, [
+    const card = h("div", { class: `card ${app.is_system ? "system" : ""}` }, [
       h("div", { class: "card-header" }, [
         h("img", { class: "app-icon", src: favicon, alt: "", loading: "lazy" }),
         h("strong", {}, [app.name]),
         h("span", { class: `badge ${stateLabel}` }, [stateLabel]),
-        app.isSystem ? h("span", { class: "badge system" }, [t("system")]) : h("span", {}),
+        app.is_system ? h("span", { class: "badge system" }, [t("system")]) : h("span", {}),
       ]),
       h("div", { class: "card-body" }, [
         h("div", { class: "app-url" }, [`${app.url}`]),
-        h("div", { class: "muted" }, [`${t("engine")} ${app.runtimeProfile} · ${t("close")} ${app.closeAction === "background" ? t("dwell") : t("quit")}`]),
+        h("div", { class: "muted" }, [`${t("engine")} ${app.runtime_profile} · ${t("close")} ${app.close_action === "background" ? t("dwell") : t("quit")}`]),
       ]),
       h("div", { class: "card-actions" }, [
         h("button", { "data-act": "launch", "data-id": app.id }, running ? [t("activate")] : [t("launch")]),
         h("button", { "data-act": "terminate", "data-id": app.id, disabled: !running && !background ? "true" : "" }, [t("terminate")]),
         h("button", { "data-act": "edit", "data-id": app.id }, [t("edit")]),
         h("button", { "data-act": "shortcut", "data-id": app.id, title: t("shortcut") }, [t("shortcut")]),
-        app.isSystem ? h("span", {}) : h("button", { "data-act": "delete", "data-id": app.id, class: "danger" }, [t("delete")]),
+        app.is_system ? h("span", {}) : h("button", { "data-act": "delete", "data-id": app.id, class: "danger" }, [t("delete")]),
       ]),
     ]);
     grid.append(card);
@@ -368,12 +368,12 @@ function openModal(app: App | null): void {
       h("h2", {}, [app ? `${t("editApp")} ${app.name}` : t("addAppTitle")]),
       field(t("name"), "f-name", app?.name || ""),
       field(t("url"), "f-url", app?.url || "https://"),
-      field(t("closeAction"), "f-close", app?.closeAction || "background", [
+      field(t("closeAction"), "f-close", app?.close_action || "background", [
         opt("background", t("dwell")),
         opt("quit", t("quit")),
       ]),
-      field(t("preHook"), "f-pre", (app?.hooks.preLaunch || []).join("; ")),
-      field(t("postHook"), "f-post", (app?.hooks.postExit || []).join("; ")),
+      field(t("preHook"), "f-pre", (app?.hooks.pre_launch || []).join("; ")),
+      field(t("postHook"), "f-post", (app?.hooks.post_exit || []).join("; ")),
       field(t("injectCss"), "f-css", app?.injections.css || "", [], true),
       field(t("injectJs"), "f-js", app?.injections.js || "", [], true),
       h("div", { class: "modal-actions" }, [
@@ -387,10 +387,10 @@ function openModal(app: App | null): void {
     const payload: Partial<App> = {
       name: val("f-name"),
       url: val("f-url"),
-      closeAction: val("f-close") as "background" | "quit",
+      close_action: val("f-close") as "background" | "quit",
       hooks: {
-        preLaunch: val("f-pre").split(";").map((s) => s.trim()).filter(Boolean),
-        postExit: val("f-post").split(";").map((s) => s.trim()).filter(Boolean),
+        pre_launch: val("f-pre").split(";").map((s) => s.trim()).filter(Boolean),
+        post_exit: val("f-post").split(";").map((s) => s.trim()).filter(Boolean),
       },
       injections: { css: val("f-css"), js: val("f-js"), timing: "document_idle" },
     };
