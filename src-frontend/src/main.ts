@@ -1,34 +1,196 @@
 // WebDesk 管理控制台（吃自己的狗粮：本页即运行在 WebDesk 上的第一个 Web 应用）
-// 功能：应用网格 / 增删改查 / 启动·激活·终止 / 平台状态
+// 功能：应用网格 / 增删改查 / 启动·激活·终止 / 平台状态 / 侧边栏 / 设置(i18n)
 
-import { api, initApi, setApiManual, isApiReady, App, PlatformStatus } from "./api";
+import { api, initApi, App, PlatformStatus } from "./api";
 
 const appEl = document.getElementById("app")!;
 
+// ---------- i18n ----------
+type Lang = "zh" | "en";
+const I18N: Record<Lang, Record<string, string>> = {
+  zh: {
+    app: "应用",
+    settings: "设置",
+    console: "WebDesk 控制台",
+    refresh: "刷新",
+    addApp: "+ 添加应用",
+    running: "运行中",
+    background: "后台",
+    stopped: "已停止",
+    system: "系统",
+    engine: "引擎",
+    close: "关窗",
+    dwell: "驻留",
+    quit: "退出",
+    launch: "启动",
+    activate: "激活",
+    terminate: "终止",
+    edit: "编辑",
+    shortcut: "桌面快捷方式",
+    delete: "删除",
+    language: "语言",
+    languageHint: "界面显示语言",
+    settingsTitle: "设置",
+    settingsDesc: "管理 WebDesk 控制台的偏好设置",
+    version: "版本",
+    port: "端口",
+    memory: "内存",
+    noApps: "（无应用。用 `webdesk addweb -n 名称 -url 地址` 添加）",
+    platformStatus: "平台状态加载中…",
+    connectFail: "连接失败",
+    save: "保存",
+    cancel: "取消",
+    editApp: "编辑",
+    addAppTitle: "添加应用",
+    name: "名称",
+    url: "URL",
+    closeAction: "关窗行为",
+    preHook: "启动前钩子 (分号分隔)",
+    postHook: "关闭后钩子 (分号分隔)",
+    injectCss: "注入 CSS",
+    injectJs: "注入 JS",
+    shortcutTitle: "创建桌面快捷方式",
+    iconSource: "图标来源",
+    defaultIcon: "默认图标",
+    localIco: "选择本地 .ico 文件",
+    autoIcon: "自动从网页获取图标",
+    icoPath: ".ico 文件路径",
+    autoHint: "将自动抓取该应用的网页图标",
+    create: "创建",
+    created: "✅ 已创建桌面快捷方式",
+    createFail: "快捷方式创建失败",
+    deleteConfirm: "确定删除该应用？",
+    unshortcutConfirm: "确定移除桌面快捷方式？",
+    launched: "已启动",
+    opDone: "操作完成",
+    opFail: "操作失败",
+    saveFail: "保存失败",
+    createFail2: "创建失败",
+  },
+  en: {
+    app: "Apps",
+    settings: "Settings",
+    console: "WebDesk Console",
+    refresh: "Refresh",
+    addApp: "+ Add App",
+    running: "Running",
+    background: "Background",
+    stopped: "Stopped",
+    system: "System",
+    engine: "Engine",
+    close: "Close",
+    dwell: "Dwell",
+    quit: "Quit",
+    launch: "Launch",
+    activate: "Activate",
+    terminate: "Terminate",
+    edit: "Edit",
+    shortcut: "Shortcut",
+    delete: "Delete",
+    language: "Language",
+    languageHint: "UI display language",
+    settingsTitle: "Settings",
+    settingsDesc: "Manage WebDesk console preferences",
+    version: "Version",
+    port: "Port",
+    memory: "Memory",
+    noApps: "(No apps. Add with `webdesk addweb -n name -url url`)",
+    platformStatus: "Loading platform status…",
+    connectFail: "Connection failed",
+    save: "Save",
+    cancel: "Cancel",
+    editApp: "Edit",
+    addAppTitle: "Add App",
+    name: "Name",
+    url: "URL",
+    closeAction: "Close action",
+    preHook: "Pre-launch hook (semicolon separated)",
+    postHook: "Post-exit hook (semicolon separated)",
+    injectCss: "Inject CSS",
+    injectJs: "Inject JS",
+    shortcutTitle: "Create Desktop Shortcut",
+    iconSource: "Icon source",
+    defaultIcon: "Default icon",
+    localIco: "Choose local .ico file",
+    autoIcon: "Auto fetch from webpage",
+    icoPath: ".ico file path",
+    autoHint: "Will auto-fetch this app's webpage icon",
+    create: "Create",
+    created: "✅ Desktop shortcut created",
+    createFail: "Shortcut creation failed",
+    deleteConfirm: "Delete this app?",
+    unshortcutConfirm: "Remove desktop shortcut?",
+    launched: "Launched",
+    opDone: "Done",
+    opFail: "Operation failed",
+    saveFail: "Save failed",
+    createFail2: "Create failed",
+  },
+};
+
+let lang: Lang = (localStorage.getItem("webdesk-lang") as Lang) || "zh";
+function t(key: string): string {
+  return I18N[lang][key] || key;
+}
+function setLang(l: Lang) {
+  lang = l;
+  localStorage.setItem("webdesk-lang", l);
+  render();
+}
+
+// ---------- DOM helpers ----------
 function h(tag: string, attrs: Record<string, string> = {}, children: (string | HTMLElement)[] = []): HTMLElement {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
   for (const c of children) el.append(c instanceof HTMLElement ? c : document.createTextNode(c));
   return el;
 }
-
 function el<K extends keyof HTMLElementTagNameMap>(tag: K): HTMLElementTagNameMap[K] {
   return document.createElement(tag);
 }
 
+// ---------- 视图状态 ----------
+let currentView: "apps" | "settings" = "apps";
+
 function render(): void {
   appEl.innerHTML = "";
   appEl.append(
-    h("div", { class: "toolbar" }, [
-      h("h1", {}, ["WebDesk 控制台"]),
-      h("button", { id: "btn-refresh" }, ["刷新"]),
-      h("button", { id: "btn-new" }, ["+ 添加应用"]),
+    h("div", { class: "layout" }, [
+      h("aside", { class: "sidebar" }, [
+        h("div", { class: "sidebar-brand" }, [t("console")]),
+        h("nav", { class: "sidebar-nav" }, [
+          h("button", { id: "nav-apps", class: `nav-item ${currentView === "apps" ? "active" : ""}` }, [t("app")]),
+          h("button", { id: "nav-settings", class: `nav-item ${currentView === "settings" ? "active" : ""}` }, [t("settings")]),
+        ]),
+      ]),
+      h("main", { class: "main" }, [
+        h("div", { id: "view-apps", class: `view ${currentView === "apps" ? "" : "hidden"}` }),
+        h("div", { id: "view-settings", class: `view ${currentView === "settings" ? "" : "hidden"}` }),
+      ]),
     ]),
-    h("div", { id: "status-bar", class: "status-bar" }, ["平台状态加载中…"]),
-    h("div", { id: "grid", class: "grid" }),
     h("div", { id: "modal", class: "modal hidden" }),
   );
 
+  document.getElementById("nav-apps")!.onclick = () => { currentView = "apps"; render(); };
+  document.getElementById("nav-settings")!.onclick = () => { currentView = "settings"; renderSettings(); };
+
+  if (currentView === "apps") renderApps();
+  else renderSettings();
+}
+
+// ---------- 应用视图 ----------
+function renderApps(): void {
+  const view = document.getElementById("view-apps")!;
+  view.innerHTML = "";
+  view.append(
+    h("div", { class: "toolbar" }, [
+      h("h1", {}, [t("app")]),
+      h("button", { id: "btn-refresh" }, [t("refresh")]),
+      h("button", { id: "btn-new" }, [t("addApp")]),
+    ]),
+    h("div", { id: "status-bar", class: "status-bar" }, [t("platformStatus")]),
+    h("div", { id: "grid", class: "grid" }),
+  );
   document.getElementById("btn-refresh")!.onclick = refreshAll;
   document.getElementById("btn-new")!.onclick = () => openModal(null);
   refreshAll();
@@ -40,10 +202,10 @@ async function refreshAll(): Promise<void> {
   grid.innerHTML = "";
   try {
     const [status, apps] = await Promise.all([api.status(), api.listApps()]);
-    statusEl.textContent = `版本 ${status.version} · 运行 ${status.running.length} · 后台 ${status.background.length} · 端口 ${status.port} · 内存 ${(status.memoryKb / 1024).toFixed(1)} MB`;
+    statusEl.textContent = `${t("version")} ${status.version} · ${t("running")} ${status.running.length} · ${t("background")} ${status.background.length} · ${t("port")} ${status.port} · ${t("memory")} ${(status.memoryKb / 1024).toFixed(1)} MB`;
     renderGrid(apps, status);
   } catch (e) {
-    statusEl.textContent = `连接失败: ${(e as Error).message}`;
+    statusEl.textContent = `${t("connectFail")}: ${(e as Error).message}`;
   }
 }
 
@@ -52,7 +214,7 @@ function renderGrid(apps: App[], status: PlatformStatus): void {
   for (const app of apps) {
     const running = status.running.includes(app.id);
     const background = status.background.includes(app.id);
-    const stateLabel = running ? "运行中" : background ? "后台" : "已停止";
+    const stateLabel = running ? t("running") : background ? t("background") : t("stopped");
     const favicon = faviconUrl(app.url);
 
     const card = h("div", { class: `card ${app.isSystem ? "system" : ""}` }, [
@@ -60,18 +222,18 @@ function renderGrid(apps: App[], status: PlatformStatus): void {
         h("img", { class: "app-icon", src: favicon, alt: "", loading: "lazy" }),
         h("strong", {}, [app.name]),
         h("span", { class: `badge ${stateLabel}` }, [stateLabel]),
-        app.isSystem ? h("span", { class: "badge system" }, ["系统"]) : h("span", {}),
+        app.isSystem ? h("span", { class: "badge system" }, [t("system")]) : h("span", {}),
       ]),
       h("div", { class: "card-body" }, [
         h("div", { class: "app-url" }, [`${app.url}`]),
-        h("div", { class: "muted" }, [`引擎 ${app.runtimeProfile} · 关窗 ${app.closeAction === "background" ? "驻留" : "退出"}`]),
+        h("div", { class: "muted" }, [`${t("engine")} ${app.runtimeProfile} · ${t("close")} ${app.closeAction === "background" ? t("dwell") : t("quit")}`]),
       ]),
       h("div", { class: "card-actions" }, [
-        h("button", { "data-act": "launch", "data-id": app.id }, running ? ["激活"] : ["启动"]),
-        h("button", { "data-act": "terminate", "data-id": app.id, disabled: !running && !background ? "true" : "" }, ["终止"]),
-        h("button", { "data-act": "edit", "data-id": app.id }, ["编辑"]),
-        h("button", { "data-act": "shortcut", "data-id": app.id, title: "创建桌面快捷方式" }, ["桌面快捷方式"]),
-        app.isSystem ? h("span", {}) : h("button", { "data-act": "delete", "data-id": app.id, class: "danger" }, ["删除"]),
+        h("button", { "data-act": "launch", "data-id": app.id }, running ? [t("activate")] : [t("launch")]),
+        h("button", { "data-act": "terminate", "data-id": app.id, disabled: !running && !background ? "true" : "" }, [t("terminate")]),
+        h("button", { "data-act": "edit", "data-id": app.id }, [t("edit")]),
+        h("button", { "data-act": "shortcut", "data-id": app.id, title: t("shortcut") }, [t("shortcut")]),
+        app.isSystem ? h("span", {}) : h("button", { "data-act": "delete", "data-id": app.id, class: "danger" }, [t("delete")]),
       ]),
     ]);
     grid.append(card);
@@ -95,54 +257,78 @@ async function handleAction(act: string, id: string): Promise<void> {
   try {
     if (act === "launch") {
       const r = await api.launchApp(id);
-      alert(r.status === "running" ? "已启动" : r.windowId ? `已启动 (${r.windowId})` : "操作完成");
+      alert(r.status === "running" ? t("launched") : r.windowId ? `${t("launched")} (${r.windowId})` : t("opDone"));
     } else if (act === "terminate") {
       await api.terminateApp(id);
     } else if (act === "edit") {
       const app = await api.getApp(id);
       openModal(app);
     } else if (act === "delete") {
-      if (confirm("确定删除该应用？")) await api.deleteApp(id);
+      if (confirm(t("deleteConfirm"))) await api.deleteApp(id);
     } else if (act === "shortcut") {
       const app = await api.getApp(id);
       shortcutDialog(app);
-      return; // 不 refreshAll（对话框自己处理）
+      return;
     } else if (act === "unshortcut") {
-      if (confirm("确定移除桌面快捷方式？")) await api.removeShortcut(id);
+      if (confirm(t("unshortcutConfirm"))) await api.removeShortcut(id);
     }
     refreshAll();
   } catch (e) {
-    alert(`操作失败: ${(e as Error).message}`);
+    alert(`${t("opFail")}: ${(e as Error).message}`);
   }
 }
 
-/** 快捷方式图标选择对话框：默认 / 本地 .ico / 自动抓取网页图标 */
+// ---------- 设置视图 ----------
+function renderSettings(): void {
+  const view = document.getElementById("view-settings")!;
+  view.innerHTML = "";
+  view.append(
+    h("div", { class: "toolbar" }, [h("h1", {}, [t("settingsTitle")])]),
+    h("div", { class: "settings-card" }, [
+      h("h2", {}, [t("settingsTitle")]),
+      h("p", { class: "muted" }, [t("settingsDesc")]),
+      h("div", { class: "field" }, [
+        h("label", { for: "set-lang" }, [t("language")]),
+        h("select", { id: "set-lang" }, [
+          opt("zh", "中文"),
+          opt("en", "English"),
+        ]),
+        h("div", { class: "muted" }, [t("languageHint")]),
+      ]),
+    ]),
+  );
+  const sel = document.getElementById("set-lang") as HTMLSelectElement;
+  sel.value = lang;
+  sel.onchange = () => setLang(sel.value as Lang);
+}
+
+// ---------- 快捷方式对话框 ----------
 function shortcutDialog(app: App): void {
   const modal = document.getElementById("modal")!;
   modal.classList.remove("hidden");
   modal.innerHTML = "";
   modal.append(
     h("div", { class: "modal-content" }, [
-      h("h2", {}, ["创建桌面快捷方式"]),
+      h("h2", {}, [t("shortcutTitle")]),
       h("div", { class: "field" }, [
-        h("label", {}, ["图标来源"]),
+        h("label", {}, [t("iconSource")]),
         h("select", { id: "sc-icon-type" }, [
-          opt("default", "默认图标"),
-          opt("local", "选择本地 .ico 文件"),
-          opt("auto", "自动从网页获取图标"),
+          opt("default", t("defaultIcon")),
+          opt("local", t("localIco")),
+          opt("auto", t("autoIcon")),
         ]),
       ]),
       h("div", { id: "sc-local-wrap", class: "field hidden" }, [
-        h("label", { for: "sc-local" }, [".ico 文件路径"]),
+        h("label", { for: "sc-local" }, [t("icoPath")]),
         h("input", { id: "sc-local", placeholder: "C:\\path\\to\\icon.ico" }),
       ]),
       h("div", { class: "field", id: "sc-auto-hint" }, [
-        h("label", {}, ["将自动抓取该应用的网页图标"]),
+        h("label", {}, [t("autoHint")]),
         h("div", { class: "muted" }, [`${app.url}`]),
       ]),
       h("div", { class: "modal-actions" }, [
-        h("button", { id: "sc-ok" }, ["创建"]),
-        h("button", { id: "sc-cancel" }, ["取消"]),
+        h("button", { id: "sc-ok" }, [t("create")]),
+        h("button", { id: "sc-cancel" }, [t("cancel")]),
       ]),
     ]),
   );
@@ -160,39 +346,39 @@ function shortcutDialog(app: App): void {
     if (typeSel.value === "local") {
       icon = (document.getElementById("sc-local") as HTMLInputElement).value.trim() || undefined;
     } else if (typeSel.value === "auto") {
-      // 自动抓取：传应用 URL，后端解析其 favicon
       icon = app.url;
     }
     try {
       const r = await api.createShortcut(app.id, icon);
       modal.classList.add("hidden");
-      alert(r.created ? "✅ 已创建桌面快捷方式" : "快捷方式创建失败");
+      alert(r.created ? t("created") : t("createFail"));
     } catch (e) {
-      alert(`创建失败: ${(e as Error).message}`);
+      alert(`${t("createFail2")}: ${(e as Error).message}`);
     }
   };
 }
 
+// ---------- 应用编辑对话框 ----------
 function openModal(app: App | null): void {
   const modal = document.getElementById("modal")!;
   modal.classList.remove("hidden");
   modal.innerHTML = "";
   modal.append(
     h("div", { class: "modal-content" }, [
-      h("h2", {}, [app ? `编辑 ${app.name}` : "添加应用"]),
-      field("名称", "f-name", app?.name || ""),
-      field("URL", "f-url", app?.url || "https://"),
-      field("关窗行为", "f-close", app?.closeAction || "background", [
-        opt("background", "后台驻留"),
-        opt("quit", "退出"),
+      h("h2", {}, [app ? `${t("editApp")} ${app.name}` : t("addAppTitle")]),
+      field(t("name"), "f-name", app?.name || ""),
+      field(t("url"), "f-url", app?.url || "https://"),
+      field(t("closeAction"), "f-close", app?.closeAction || "background", [
+        opt("background", t("dwell")),
+        opt("quit", t("quit")),
       ]),
-      field("启动前钩子 (分号分隔)", "f-pre", (app?.hooks.preLaunch || []).join("; ")),
-      field("关闭后钩子 (分号分隔)", "f-post", (app?.hooks.postExit || []).join("; ")),
-      field("注入 CSS", "f-css", app?.injections.css || "", [], true),
-      field("注入 JS", "f-js", app?.injections.js || "", [], true),
+      field(t("preHook"), "f-pre", (app?.hooks.preLaunch || []).join("; ")),
+      field(t("postHook"), "f-post", (app?.hooks.postExit || []).join("; ")),
+      field(t("injectCss"), "f-css", app?.injections.css || "", [], true),
+      field(t("injectJs"), "f-js", app?.injections.js || "", [], true),
       h("div", { class: "modal-actions" }, [
-        h("button", { id: "modal-save" }, ["保存"]),
-        h("button", { id: "modal-cancel" }, ["取消"]),
+        h("button", { id: "modal-save" }, [t("save")]),
+        h("button", { id: "modal-cancel" }, [t("cancel")]),
       ]),
     ]),
   );
@@ -214,7 +400,7 @@ function openModal(app: App | null): void {
       modal.classList.add("hidden");
       refreshAll();
     } catch (e) {
-      alert(`保存失败: ${(e as Error).message}`);
+      alert(`${t("saveFail")}: ${(e as Error).message}`);
     }
   };
 }
@@ -254,9 +440,7 @@ function opt(value: string, label: string): HTMLOptionElement {
 }
 
 // ---------- 启动 ----------
-
 (async function bootstrap() {
-  // 固定 127.0.0.1:3070，无鉴权，直接连接
   await initApi();
   render();
 })();

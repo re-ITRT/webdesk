@@ -177,7 +177,20 @@ fn build_router(state: SharedState) -> Router {
 
 /// 定位前端 dist 目录（开发 vs 打包）
 fn frontend_dist_dir(state: &SharedState) -> std::path::PathBuf {
-    // 1) 打包后：resource_dir/webdesk/dist 或 resource_dir/dist
+    // 开发时（debug）：优先用项目 src-frontend/dist（改代码立即生效）
+    if cfg!(debug_assertions) {
+        if let Ok(exe) = std::env::current_exe() {
+            let mut dir = exe.parent();
+            while let Some(d) = dir {
+                let candidate = d.join("src-frontend").join("dist");
+                if candidate.exists() {
+                    return candidate;
+                }
+                dir = d.parent();
+            }
+        }
+    }
+    // 打包后：resource_dir/webdesk/dist 或 resource_dir/dist
     if let Ok(res) = state.app_handle.path().resource_dir() {
         let packaged = res.join("webdesk").join("dist");
         if packaged.exists() {
@@ -188,19 +201,7 @@ fn frontend_dist_dir(state: &SharedState) -> std::path::PathBuf {
             return direct;
         }
     }
-    // 2) 开发时：从 exe 向上找含 src-frontend/dist 的项目根
-    //    target/debug/webdesk.exe → 向上到项目根 → src-frontend/dist
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent();
-        while let Some(d) = dir {
-            let candidate = d.join("src-frontend").join("dist");
-            if candidate.exists() {
-                return candidate;
-            }
-            dir = d.parent();
-        }
-    }
-    // 3) 兜底：当前目录 src-frontend/dist（尝试 ../）
+    // 兜底：当前目录 src-frontend/dist（尝试 ../）
     let rel = std::path::PathBuf::from("..")
         .join("src-frontend")
         .join("dist");
