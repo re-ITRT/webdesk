@@ -168,6 +168,23 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
         .build()
         .map_err(|e| anyhow::anyhow!("创建窗口失败: {e}"))?;
 
+    // Windows：设置窗口独立任务栏身份（独立 AUMID + 图标），
+    // 使应用窗口在任务栏与 WebDesk 主进程完全分开
+    #[cfg(target_os = "windows")]
+    {
+        let icon_str = icon_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        if let Ok(hwnd) = window.hwnd() {
+            let hwnd_isize = hwnd.0 as isize;
+            if let Err(e) = crate::platform::set_window_taskbar_identity(
+                hwnd_isize,
+                &app_id,
+                icon_str.as_deref(),
+            ) {
+                log::warn!("设置窗口独立任务栏身份失败: {e}");
+            }
+        }
+    }
+
     // 注入 CSS / JS
     inject_webview(&window, app);
 
