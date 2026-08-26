@@ -65,6 +65,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     opDone: "操作完成",
     opFail: "操作失败",
     saveFail: "保存失败",
+    saved: "已保存",
     createFail2: "创建失败",
   },
   en: {
@@ -124,6 +125,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     opDone: "Done",
     opFail: "Operation failed",
     saveFail: "Save failed",
+    saved: "Saved",
     createFail2: "Create failed",
   },
 };
@@ -147,6 +149,25 @@ function h(tag: string, attrs: Record<string, string> = {}, children: (string | 
 }
 function el<K extends keyof HTMLElementTagNameMap>(tag: K): HTMLElementTagNameMap[K] {
   return document.createElement(tag);
+}
+
+// ---------- 消息提醒（toast，自动消失） ----------
+function toast(message: string, type: "info" | "error" = "info", duration = 2500): void {
+  let container = document.getElementById("toast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toast-container";
+    document.body.appendChild(container);
+  }
+  const t = document.createElement("div");
+  t.className = `toast ${type === "error" ? "error" : ""}`;
+  t.textContent = message;
+  container.appendChild(t);
+  requestAnimationFrame(() => t.classList.add("show"));
+  setTimeout(() => {
+    t.classList.remove("show");
+    setTimeout(() => t.remove(), 300);
+  }, duration);
 }
 
 // ---------- 视图状态 ----------
@@ -257,7 +278,7 @@ async function handleAction(act: string, id: string): Promise<void> {
   try {
     if (act === "launch") {
       const r = await api.launchApp(id);
-      alert(r.status === "running" ? t("launched") : r.windowId ? `${t("launched")} (${r.windowId})` : t("opDone"));
+      toast(r.status === "running" ? t("launched") : r.windowId ? `${t("launched")} (${r.windowId})` : t("opDone"));
     } else if (act === "terminate") {
       await api.terminateApp(id);
     } else if (act === "edit") {
@@ -274,7 +295,7 @@ async function handleAction(act: string, id: string): Promise<void> {
     }
     refreshAll();
   } catch (e) {
-    alert(`${t("opFail")}: ${(e as Error).message}`);
+    toast(`${t("opFail")}: ${(e as Error).message}`, "error");
   }
 }
 
@@ -352,9 +373,9 @@ function shortcutDialog(app: App): void {
     try {
       const r = await api.createShortcut(app.id, icon);
       modal.classList.add("hidden");
-      alert(r.created ? t("created") : t("createFail"));
+      toast(r.created ? t("created") : t("createFail"), r.created ? "info" : "error");
     } catch (e) {
-      alert(`${t("createFail2")}: ${(e as Error).message}`);
+      toast(`${t("createFail2")}: ${(e as Error).message}`, "error");
     }
   };
 }
@@ -400,8 +421,9 @@ function openModal(app: App | null): void {
       else await api.createApp(payload);
       modal.classList.add("hidden");
       refreshAll();
+      toast(t("saved"));
     } catch (e) {
-      alert(`${t("saveFail")}: ${(e as Error).message}`);
+      toast(`${t("saveFail")}: ${(e as Error).message}`, "error");
     }
   };
 }
