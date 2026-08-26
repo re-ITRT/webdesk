@@ -122,12 +122,44 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
     let app_id = app.id.clone();
     let app_name = app.name.clone();
 
-    // 设置窗口图标（任务栏图标与 WebDesk 统一）
+    // 抓取应用自身图标（favicon），任务栏用独立图标而非 WebDesk 统一图标
+    // 用 spawn_blocking 避免在 runtime 线程做网络请求
+    let app_id_for_icon = app.id.clone();
+    let app_url_for_icon = app.url.clone();
+    let icon_path = tokio::task::spawn_blocking(move || {
+        crate::platform::fetch_app_icon(&app_id_for_icon, &app_url_for_icon)
+    })
+    .await
+    .unwrap_or(None);
+
+    // 设置窗口图标：优先应用自身图标，回退 WebDesk 默认
     let mut builder = WebviewWindowBuilder::new(handle, label, WebviewUrl::External(url))
         .title(&app_name)
         .inner_size(1024.0, 720.0)
         .visible(true);
-    if let Some(icon) = handle.default_window_icon() {
+    if let Some(path) = &icon_path {
+        if let Ok(bytes) = std::fs::read(path) {
+            if let Ok(img) = tauri::image::Image::from_bytes(&bytes) {
+                builder = builder
+                    .icon(img)
+                    .map_err(|e| anyhow::anyhow!("设置应用窗口图标失败: {e}"))?;
+            } else {
+                log::warn!("应用图标解码失败，回退默认: {path:?}");
+                if let Some(icon) = handle.default_window_icon() {
+                    builder = builder
+                        .icon(icon.clone())
+                        .map_err(|e| anyhow::anyhow!("设置窗口图标失败: {e}"))?;
+                }
+            }
+        } else {
+            log::warn!("应用图标读取失败，回退默认: {path:?}");
+            if let Some(icon) = handle.default_window_icon() {
+                builder = builder
+                    .icon(icon.clone())
+                    .map_err(|e| anyhow::anyhow!("设置窗口图标失败: {e}"))?;
+            }
+        }
+    } else if let Some(icon) = handle.default_window_icon() {
         builder = builder
             .icon(icon.clone())
             .map_err(|e| anyhow::anyhow!("设置窗口图标失败: {e}"))?;

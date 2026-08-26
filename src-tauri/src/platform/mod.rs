@@ -409,6 +409,54 @@ fn download_icon(url: &str) -> anyhow::Result<String> {
     Ok(dest.to_string_lossy().to_string())
 }
 
+/// 获取应用图标（每应用独立）：从应用 URL 抓取 favicon 存到
+/// `%APPDATA%/WebDesk/icons/apps/{app_id}.png`，返回路径。
+/// 失败（网络/无图标）时返回 None（调用方回退默认图标）。
+pub fn fetch_app_icon(app_id: &str, url: &str) -> Option<std::path::PathBuf> {
+    let data_dir = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("WebDesk")
+        .join("icons")
+        .join("apps");
+    let _ = std::fs::create_dir_all(&data_dir);
+    let dest = data_dir.join(format!("{app_id}.png"));
+
+    // 若已有缓存则直接返回
+    if dest.exists() {
+        return Some(dest);
+    }
+
+    // 解析 favicon URL（网页→解析；图标文件→直接）
+    let icon_url = match resolve_icon_url(url) {
+        Ok(u) => u,
+        Err(_) => return None,
+    };
+
+    // 下载（reqwest::blocking，本函数应在 spawn_blocking 中调用）
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let resp = match client.get(&icon_url).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return None,
+    };
+    let bytes = match resp.bytes() {
+        Ok(b) if !b.is_empty() => b.to_vec(),
+        _ => return None,
+    };
+
+    if std::fs::write(&dest, &bytes).is_ok() {
+        log::info!("[platform] 已获取应用图标: {icon_url} -> {dest:?}");
+        Some(dest)
+    } else {
+        None
+    }
+}
+
 /// 从图标 URL 生成安全的本地文件名：
 /// - 去掉 query 参数（?...）
 /// - 取路径最后一段
