@@ -228,6 +228,58 @@ fn inject_webview(window: &tauri::WebviewWindow, app: &App) {
   }}
   function escapeHtml(s) {{ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
 
+  // 全局 spawn 拦截：模拟 Node child_process.spawn，让网站直接调
+  // spawn('powershell.exe', args) 也能被接管（适配各种环境）
+  function buildCommand(program, args) {{
+    const a = Array.isArray(args) ? args : [];
+    return [program, ...a].join(' ');
+  }}
+  function makeChild() {{
+    // 返回一个类似 ChildProcess 的对象（on/once 事件接口）
+    const listeners = {{}};
+    const child = {{
+      pid: 0,
+      on: (ev, cb) => {{ (listeners[ev] = listeners[ev] || []).push(cb); return child; }},
+      once: (ev, cb) => {{ (listeners[ev] = listeners[ev] || []).push(cb); return child; }},
+      stdout: {{ on: () => {{}}, pipe: () => {{}} }},
+      stderr: {{ on: () => {{}}, pipe: () => {{}} }},
+      stdin: {{ write: () => {{}}, end: () => {{}} }},
+      kill: () => {{}},
+      _emit: (ev, ...args) => {{ (listeners[ev] || []).forEach(cb => cb(...args)); }},
+    }};
+    return child;
+  }}
+  function globalSpawn(program, args, opts) {{
+    const child = makeChild();
+    const command = buildCommand(program, args);
+    // 异步执行（授权 + 执行）
+    exec(command).then(r => {{
+      if (r.ok) {{
+        child.pid = r.data.pid || 0;
+        child._emit('spawn', child);
+        child._emit('close', 0, null);
+      }} else {{
+        child._emit('error', new Error(r.error || '命令执行失败'));
+        child._emit('close', -1, null);
+      }}
+    }});
+    return child;
+  }}
+  // 暴露全局 spawn（若不存在才覆盖，避免破坏已有）
+  if (typeof window.spawn === 'undefined') {{
+    Object.defineProperty(window, 'spawn', {{ value: globalSpawn, configurable: true, writable: true }});
+  }}
+  // 也暴露 require('child_process') 的常见用法（部分网站用 require）
+  if (typeof window.require === 'undefined') {{
+    Object.defineProperty(window, 'require', {{
+      value: (mod) => {{
+        if (mod === 'child_process') return {{ spawn: globalSpawn, exec: (c, cb) => {{ exec(c).then(r => cb && cb(null, r.ok ? '' : r.error)); }} }};
+        return {{}};
+      }},
+      configurable: true
+    }});
+  }}
+
   Object.defineProperty(window, 'webdesk', {{ value: {{ exec }}, configurable: true }});
 }})();
 "#
