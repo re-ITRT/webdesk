@@ -125,6 +125,9 @@ impl AppStore {
         if !patch.injections.timing.is_empty() {
             existing.injections.timing = patch.injections.timing;
         }
+        if !patch.icon.is_empty() {
+            existing.icon = patch.icon;
+        }
         if !patch.extensions.is_empty() {
             existing.extensions = patch.extensions;
         }

@@ -409,9 +409,10 @@ fn download_icon(url: &str) -> anyhow::Result<String> {
     Ok(dest.to_string_lossy().to_string())
 }
 
-/// 获取应用图标（每应用独立）：从应用 URL 抓取 favicon 存到
-/// `%APPDATA%/WebDesk/icons/apps/{app_id}.png`，返回路径。
-/// 失败（网络/无图标）时返回 None（调用方回退默认图标）。
+/// 获取应用图标（每应用独立）：从应用 URL 抓取 favicon，统一转成 .ico 存到
+/// `%APPDATA%/WebDesk/icons/apps/{app_id}.ico`，返回路径。
+/// 转成 .ico 是因为：Windows .lnk 的 IconLocation 只支持 .ico/.exe/.dll，
+/// Tauri 的 Image::from_bytes 也支持 ico。失败（网络/无图标）返回 None。
 pub fn fetch_app_icon(app_id: &str, url: &str) -> Option<std::path::PathBuf> {
     let data_dir = dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -419,7 +420,7 @@ pub fn fetch_app_icon(app_id: &str, url: &str) -> Option<std::path::PathBuf> {
         .join("icons")
         .join("apps");
     let _ = std::fs::create_dir_all(&data_dir);
-    let dest = data_dir.join(format!("{app_id}.png"));
+    let dest = data_dir.join(format!("{app_id}.ico"));
 
     // 若已有缓存则直接返回
     if dest.exists() {
@@ -449,29 +450,68 @@ pub fn fetch_app_icon(app_id: &str, url: &str) -> Option<std::path::PathBuf> {
         _ => return None,
     };
 
-    // 若下载的是 SVG，转成 PNG（Tauri Image / .lnk 不支持 SVG）
-    let is_svg = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)])
-        .trim_start()
-        .to_lowercase()
-        .starts_with("<svg");
-    if is_svg {
-        match svg_to_png(&bytes) {
-            Some(png_bytes) => {
-                if std::fs::write(&dest, &png_bytes).is_ok() {
-                    log::info!("[platform] 已获取应用图标(SVG→PNG): {icon_url} -> {dest:?}");
-                    return Some(dest);
-                }
-            }
-            None => log::warn!("[platform] SVG 图标转 PNG 失败: {icon_url}"),
+    // 转成 .ico 字节（SVG→PNG→ICO；PNG→ICO；已有 ICO 直接用）
+    let ico_bytes = match to_ico(&bytes) {
+        Some(ico) => ico,
+        None => {
+            log::warn!("[platform] 图标转 ICO 失败: {icon_url}");
+            return None;
         }
-    }
+    };
 
-    if std::fs::write(&dest, &bytes).is_ok() {
-        log::info!("[platform] 已获取应用图标: {icon_url} -> {dest:?}");
+    if std::fs::write(&dest, &ico_bytes).is_ok() {
+        log::info!("[platform] 已获取应用图标(→ICO): {icon_url} -> {dest:?}");
         Some(dest)
     } else {
         None
     }
+}
+
+/// 把任意图标字节统一转成 .ico 字节。
+/// - 已是 ICO（magic `\0\0\1\0`）→ 原样返回
+/// - SVG → resvg 转 PNG → 再包 ICO
+/// - PNG/BMP → 直接包 ICO
+fn to_ico(bytes: &[u8]) -> Option<Vec<u8>> {
+    // 判断是否已是 ICO（ICONDIR: reserved=0, type=1）
+    if bytes.len() >= 6 && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 1 && bytes[3] == 0 {
+        return Some(bytes.to_vec());
+    }
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)])
+        .trim_start()
+        .to_lowercase();
+    // SVG → PNG
+    let png_bytes: Vec<u8> = if head.starts_with("<svg") {
+        svg_to_png(bytes)?
+    } else {
+        bytes.to_vec()
+    };
+    png_to_ico(&png_bytes)
+}
+
+/// 将 PNG 字节包装成 ICO 容器（Windows Vista+ 支持 PNG 压缩图标）
+fn png_to_ico(png: &[u8]) -> Option<Vec<u8>> {
+    // 解析 PNG 尺寸（IHDR 宽高在字节 16-23）
+    if png.len() < 24 || &png[0..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    let width = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
+    let height = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
+    let mut ico = Vec::with_capacity(22 + png.len());
+    // ICONDIR
+    ico.extend_from_slice(&[0, 0, 1, 0, 1, 0]); // reserved, type=icon, count=1
+                                                // ICONDIRENTRY
+    let w: u8 = if width >= 256 { 0 } else { width as u8 };
+    let h: u8 = if height >= 256 { 0 } else { height as u8 };
+    ico.push(w);
+    ico.push(h);
+    ico.push(0); // palette
+    ico.push(0); // reserved
+    ico.extend_from_slice(&(1u16).to_le_bytes()); // planes
+    ico.extend_from_slice(&(32u16).to_le_bytes()); // bpp
+    ico.extend_from_slice(&(png.len() as u32).to_le_bytes()); // size
+    ico.extend_from_slice(&22u32.to_le_bytes()); // offset
+    ico.extend_from_slice(png);
+    Some(ico)
 }
 
 /// 将 SVG 字节渲染为 PNG 字节（用 resvg/usvg）
