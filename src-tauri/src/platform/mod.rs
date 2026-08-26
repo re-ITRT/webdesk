@@ -699,6 +699,7 @@ pub fn autostart_enabled_cmd(app: AppHandle) -> Result<bool, String> {
 mod tests {
     use super::*;
     use crate::app_state::RunningApp;
+    use crate::auth::AuthStore;
     use crate::scheduler::Scheduler;
     use crate::store::AppStore;
     use std::sync::RwLock;
@@ -722,6 +723,7 @@ mod tests {
         AppState {
             store,
             scheduler: Scheduler::new(),
+            auth: AuthStore::new().unwrap(),
             running: RwLock::new(map),
         }
     }

@@ -166,6 +166,8 @@ fn build_router(state: SharedState) -> Router {
         .route("/api/apps/{id}/terminate", post(terminate_app))
         .route("/api/apps/{id}/status", get(app_status))
         .route("/api/apps/{id}/identity", get(identity_summary))
+        .route("/api/apps/{id}/exec", post(exec_command))
+        .route("/api/apps/{id}/exec/approve", post(exec_approve))
         .route(
             "/api/apps/{id}/shortcut",
             post(create_shortcut).delete(remove_shortcut),
@@ -457,6 +459,130 @@ async fn identity_summary(State(state): State<SharedState>, Path(id): Path<Strin
     // 用真实 identity 模块统计（per-app cookie/扩展/密钥）
     let im = crate::identity::IdentityManager::new();
     Json(im.summary(&app)).into_response()
+}
+
+/// 网页请求执行命令（安全桥接）
+///
+/// body: { "command": "explorer.exe C:\\file.txt", "remember": bool }
+/// - 该 app+command 已授权 → 直接执行，返回 {status:"executed", ...}
+/// - 未授权 → 返回 {status:"needs_approval", app_id, command}，桥接 JS 弹授权框
+async fn exec_command(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let command = match body
+        .get("command")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+    {
+        Some(c) if !c.is_empty() => c,
+        _ => {
+            return err_response(
+                StatusCode::BAD_REQUEST,
+                ApiError::new("invalid_input", "command 必填"),
+            )
+        }
+    };
+
+    // 检查是否已授权（app + command）
+    let gstate = state.app_handle.state::<crate::app_state::AppState>();
+    if let Some(decision) = gstate.auth.check(&id, &command) {
+        if decision.allowed {
+            // 已授权允许 → 执行
+            return run_shell_command(&id, &command);
+        } else {
+            // 已授权拒绝 → 拒绝
+            return err_response(
+                StatusCode::FORBIDDEN,
+                ApiError::new("denied", "该命令已被拒绝执行"),
+            );
+        }
+    }
+
+    // 未授权 → 需要弹授权框
+    Json(serde_json::json!({
+        "status": "needs_approval",
+        "app_id": id,
+        "command": command,
+    }))
+    .into_response()
+}
+
+/// 用户授权后执行（桥接 JS 弹框确认后调用）
+///
+/// body: { "command": "...", "allow": true, "remember": true }
+/// - remember=true → 记录授权（app+command）
+/// - allow=true → 执行命令
+async fn exec_approve(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let command = match body
+        .get("command")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+    {
+        Some(c) if !c.is_empty() => c,
+        _ => {
+            return err_response(
+                StatusCode::BAD_REQUEST,
+                ApiError::new("invalid_input", "command 必填"),
+            )
+        }
+    };
+    let allow = body.get("allow").and_then(|v| v.as_bool()).unwrap_or(false);
+    let remember = body
+        .get("remember")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let gstate = state.app_handle.state::<crate::app_state::AppState>();
+
+    // 记录授权（用户勾选"不再提示"）
+    if remember {
+        if let Err(e) = gstate.auth.record(&id, &command, allow) {
+            log::warn!("[exec] 记录授权失败: {e}");
+        }
+    }
+
+    if allow {
+        run_shell_command(&id, &command)
+    } else {
+        err_response(
+            StatusCode::FORBIDDEN,
+            ApiError::new("denied", "用户拒绝执行该命令"),
+        )
+    }
+}
+
+/// 执行命令（spawn，不阻塞等待完成；返回进程信息）
+fn run_shell_command(app_id: &str, command: &str) -> Response {
+    log::info!("[exec] 应用 {app_id} 执行命令: {command}");
+    // 解析命令：以空格分隔首段为程序，其余为参数
+    let mut parts = command.split_whitespace();
+    let program = parts.next().unwrap_or("");
+    if program.is_empty() {
+        return err_response(
+            StatusCode::BAD_REQUEST,
+            ApiError::new("invalid_input", "命令不能为空"),
+        );
+    }
+    let args: Vec<&str> = parts.collect();
+
+    match std::process::Command::new(program).args(&args).spawn() {
+        Ok(child) => Json(serde_json::json!({
+            "status": "executed",
+            "pid": child.id(),
+            "command": command,
+        }))
+        .into_response(),
+        Err(e) => err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::new("internal", format!("命令执行失败: {e}")),
+        ),
+    }
 }
 
 async fn create_shortcut(

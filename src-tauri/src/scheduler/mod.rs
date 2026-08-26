@@ -165,19 +165,80 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
     Ok(())
 }
 
-/// 向窗口注入用户配置的 CSS / JS
+/// 向窗口注入桥接 JS（window.webdesk.exec）+ 用户配置的 CSS / JS
 ///
-/// Tauri 2 无运行时的 add_style，采用初始化脚本方式：
-/// - CSS 注入到 `<style id="webdesk-inject-style">`
-/// - JS 通过 `eval` 注入（document 就绪后执行）
+/// 注入 `window.webdesk.exec(command)`：网页可安全请求执行本地命令。
+/// - 后端检查授权（app+command），未授权返回 needs_approval → 注入脚本弹授权框
+/// - 授权框含"不再提示"勾选，记录后不再弹
+/// - 已授权 → 直接执行
 fn inject_webview(window: &tauri::WebviewWindow, app: &App) {
+    // 1) 注入桥接 JS（始终注入，网页可调用）
+    let app_id = serde_json::to_string(&app.id).unwrap_or_else(|_| "''".to_string());
+    let bridge = format!(
+        r#"
+(() => {{
+  const APP_ID = {app_id};
+  const exec = async (command, opts = {{}}) => {{
+    // 先请求执行
+    let resp = await fetch(`/api/apps/${{APP_ID}}/exec`, {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ command }})
+    }});
+    let data = await resp.json().catch(() => ({{}}));
+    if (data.status === 'executed') return {{ ok: true, data }};
+    if (data.status !== 'needs_approval') return {{ ok: false, error: data.message || '执行失败' }};
+
+    // 未授权 → 弹授权框（含不再提示）
+    const allowed = await showApproval(data.command);
+    if (allowed === null) return {{ ok: false, error: '用户取消' }};
+    // 用户确认 → 调 approve（remember 由 opts 决定，默认记住）
+    const remember = opts.remember !== false;
+    resp = await fetch(`/api/apps/${{APP_ID}}/exec/approve`, {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ command, allow: allowed, remember }})
+    }});
+    const res2 = await resp.json().catch(() => ({{}}));
+    if (allowed && res2.status === 'executed') return {{ ok: true, data: res2 }};
+    return {{ ok: false, error: res2.message || '已拒绝' }};
+  }};
+
+  // 授权框（HTML 模态，含"不再提示"勾选）
+  function showApproval(command) {{
+    return new Promise((resolve) => {{
+      const ov = document.createElement('div');
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999999;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif;';
+      const box = document.createElement('div');
+      box.style.cssText = 'background:#fff;color:#111;border-radius:10px;padding:24px;max-width:440px;width:90%;box-shadow:0 8px 30px rgba(0,0,0,.3);';
+      box.innerHTML = `
+        <h3 style="margin:0 0 12px;font-size:16px;">WebDesk 命令授权</h3>
+        <p style="margin:0 0 8px;font-size:13px;color:#555;">应用请求执行以下本地命令：</p>
+        <pre style="background:#f5f5f5;padding:10px;border-radius:6px;font-size:12px;word-break:break-all;white-space:pre-wrap;margin:0 0 14px;">${{escapeHtml(command)}}</pre>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:16px;cursor:pointer;">
+          <input type="checkbox" id="webdesk-remember" checked> 以后不再提示（记住本次授权）
+        </label>
+        <div style="display:flex;justify-content:flex-end;gap:8px;">
+          <button id="webdesk-deny" style="padding:7px 14px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;">拒绝</button>
+          <button id="webdesk-allow" style="padding:7px 16px;border:none;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer;">允许</button>
+        </div>`;
+      ov.appendChild(box);
+      document.body.appendChild(ov);
+      document.getElementById('webdesk-allow').onclick = () => {{ document.body.removeChild(ov); resolve(true); }};
+      document.getElementById('webdesk-deny').onclick = () => {{ document.body.removeChild(ov); resolve(false); }};
+    }});
+  }}
+  function escapeHtml(s) {{ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+
+  Object.defineProperty(window, 'webdesk', {{ value: {{ exec }}, configurable: true }});
+}})();
+"#
+    );
+
+    // 2) 用户配置的 CSS / JS
+    let mut script = String::new();
+    script.push_str(&bridge);
+
     let css = app.injections.css.trim();
     let js = app.injections.js.trim();
-    if css.is_empty() && js.is_empty() {
-        return;
-    }
-
-    let mut script = String::new();
     if !css.is_empty() {
         script.push_str(&format!(
             "(() => {{ const s = document.createElement('style'); s.id = 'webdesk-inject-style'; \
@@ -196,7 +257,7 @@ fn inject_webview(window: &tauri::WebviewWindow, app: &App) {
 
     // 初始化脚本会在每次 document 创建时执行
     let _ = window.eval(&script);
-    log::info!("[scheduler] 已注入 CSS/JS 到窗口 {}", window.label());
+    log::info!("[scheduler] 已注入桥接 + CSS/JS 到窗口 {}", window.label());
 }
 
 /// 彻底终止应用：关闭窗口 + post_exit 钩子 + 标记停止

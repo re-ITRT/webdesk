@@ -10,6 +10,7 @@ use std::sync::RwLock;
 
 use tauri::{AppHandle, Manager};
 
+use crate::auth::AuthStore;
 use crate::scheduler::Scheduler;
 use crate::store::AppStore;
 use crate::types::{App, AppStatus};
@@ -20,6 +21,8 @@ pub struct AppState {
     pub store: AppStore,
     /// 应用调度器（管理 WebviewWindow）
     pub scheduler: Scheduler,
+    /// 命令执行授权存储
+    pub auth: AuthStore,
     /// 运行中应用状态：app_id -> 运行信息
     pub running: RwLock<HashMap<String, RunningApp>>,
 }
@@ -43,9 +46,11 @@ impl AppState {
             .unwrap_or_else(|_| std::env::temp_dir().join("WebDesk"));
         let store = AppStore::new(&base_dir)?;
         let scheduler = Scheduler::new();
+        let auth = AuthStore::new()?;
         Ok(Self {
             store,
             scheduler,
+            auth,
             running: RwLock::new(HashMap::new()),
         })
     }

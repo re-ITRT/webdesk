@@ -14,6 +14,7 @@
 //! `docs/design/dev-paradigm.md`，接口契约见 `docs/design/api-contract.md`。
 
 mod app_state;
+pub mod auth;
 pub mod cli;
 mod hooks;
 mod identity;
