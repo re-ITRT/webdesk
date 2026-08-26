@@ -34,21 +34,23 @@ use tauri::Manager;
 pub fn run() {
     let mut builder = tauri::Builder::default();
 
-    // 单例：第二个实例启动时把 --launch 参数转发给主实例
+    // 单例：第二个实例启动时把参数转发给主实例
     builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-        if let Some(launch_arg) = argv
+        let handle = app.app_handle().clone();
+        // 若带了 --launch=<id>，唤起对应应用；否则（无参双击图标）默认唤起控制台
+        let target = argv
             .iter()
             .find(|a| a.starts_with("--launch="))
             .and_then(|a| a.split('=').nth(1))
-        {
-            let handle = app.app_handle().clone();
-            let launch_arg = launch_arg.to_string();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = scheduler::launch_by_id(&handle, &launch_arg).await {
-                    log::error!("[单例转发] 启动应用失败: {e}");
-                }
-            });
-        }
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "console".to_string());
+
+        tauri::async_runtime::spawn(async move {
+            log::info!("[单例转发] 唤起应用: {target}");
+            if let Err(e) = scheduler::launch_by_id(&handle, &target).await {
+                log::error!("[单例转发] 启动应用失败: {e}");
+            }
+        });
     }));
 
     // 开机自启插件（默认关闭，经平台模块控制）
