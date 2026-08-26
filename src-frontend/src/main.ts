@@ -11,7 +11,7 @@ const I18N: Record<Lang, Record<string, string>> = {
   zh: {
     app: "应用",
     settings: "设置",
-    console: "WebDesk 控制台",
+    console: "WebLaunch 控制台",
     refresh: "刷新",
     addApp: "+ 添加应用",
     running: "运行中",
@@ -71,7 +71,7 @@ const I18N: Record<Lang, Record<string, string>> = {
   en: {
     app: "Apps",
     settings: "Settings",
-    console: "WebDesk Console",
+    console: "WebLaunch Console",
     refresh: "Refresh",
     addApp: "+ Add App",
     running: "Running",
@@ -91,7 +91,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     language: "Language",
     languageHint: "UI display language",
     settingsTitle: "Settings",
-    settingsDesc: "Manage WebDesk console preferences",
+    settingsDesc: "Manage WebLaunch console preferences",
     version: "Version",
     port: "Port",
     memory: "Memory",

@@ -163,7 +163,7 @@ impl TrayController {
             let icon = app.default_window_icon().cloned();
             let mut builder = TrayIconBuilder::with_id(TRAY_ID)
                 .menu(&menu)
-                .tooltip("WebDesk")
+                .tooltip("WebLaunch")
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |handle, event| {
                     let id = event.id().as_ref();
@@ -304,7 +304,7 @@ pub fn sanitize_filename(s: &str) -> String {
         .collect();
     let t = cleaned.trim();
     if t.is_empty() {
-        "WebDesk-App".to_string()
+        "WebLaunch-App".to_string()
     } else {
         t.to_string()
     }
@@ -721,7 +721,7 @@ fn create_shortcut_linux(
         "[Desktop Entry]\n\
          Type=Application\n\
          Name={name}\n\
-         Comment=WebDesk 启动器\n\
+         Comment=WebLaunch 启动器\n\
          Exec=\"{exe}\" --launch={arg}\n\
          Terminal=false\n\
          Categories=Network;WebBrowser;\n\
@@ -839,7 +839,7 @@ pub fn set_window_taskbar_identity(
     let hwnd = HWND(hwnd as *mut _);
 
     // 1) 设置独立 AUMID：任务栏按 AUMID 分组/显示独立图标
-    let aumid = format!("WebDesk.App.{app_id}");
+    let aumid = format!("WebLaunch.App.{app_id}");
     let mut wide: Vec<u16> = aumid.encode_utf16().collect();
     wide.push(0);
     unsafe {
@@ -1009,7 +1009,7 @@ mod tests {
     #[test]
     fn sanitize_filename_handles_bad_chars() {
         assert_eq!(sanitize_filename("a/b:c*d?e"), "a_b_c_d_e");
-        assert_eq!(sanitize_filename("   "), "WebDesk-App");
+        assert_eq!(sanitize_filename("   "), "WebLaunch-App");
         assert_eq!(sanitize_filename("正常名"), "正常名");
         // 应能作为合法文件名
         assert_eq!(sanitize_filename("a/b"), "a_b");

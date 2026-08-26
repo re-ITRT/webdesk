@@ -15,9 +15,9 @@ use serde_json::Value;
 /// WebDesk 命令行工具
 #[derive(Parser)]
 #[command(
-    name = "webdesk",
+    name = "weblaunch",
     version,
-    about = "WebDesk 通用 Web 应用桌面化管理平台（CLI + daemon 合一）"
+    about = "WebLaunch — 把 Web 应用启动托管为桌面应用（CLI + daemon 合一）"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -156,7 +156,7 @@ fn ensure_daemon() -> Result<u16, String> {
     if ping_daemon(PORT) {
         return Ok(PORT);
     }
-    eprintln!("WebDesk daemon 未运行，正在启动…");
+    eprintln!("WebLaunch daemon 未运行，正在启动…");
     spawn_daemon()?;
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -404,7 +404,7 @@ fn cmd_shortcut(id: &str) -> Result<(), String> {
 fn cmd_platform_status() -> Result<(), String> {
     let port = ensure_daemon()?;
     let st = get_json(port, "/api/status")?;
-    println!("WebDesk 平台状态");
+    println!("WebLaunch 平台状态");
     println!(
         "  版本: {}",
         st.get("version").and_then(|v| v.as_str()).unwrap_or("?")
@@ -443,6 +443,6 @@ fn cmd_console() -> Result<(), String> {
 }
 
 fn cmd_version() -> Result<(), String> {
-    println!("webdesk {}", env!("CARGO_PKG_VERSION"));
+    println!("weblaunch {}", env!("CARGO_PKG_VERSION"));
     Ok(())
 }

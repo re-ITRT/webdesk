@@ -5241,32 +5241,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "webdesk"
-version = "0.2.1"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "dirs 5.0.1",
- "log",
- "regex",
- "reqwest 0.12.28",
- "resvg",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-log",
- "tauri-plugin-single-instance",
- "tokio",
- "tower-http",
- "usvg",
- "uuid",
- "windows 0.60.0",
-]
-
-[[package]]
 name = "webkit2gtk"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5308,6 +5282,32 @@ dependencies = [
  "pkg-config",
  "soup3-sys",
  "system-deps",
+]
+
+[[package]]
+name = "weblaunch"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "dirs 5.0.1",
+ "log",
+ "regex",
+ "reqwest 0.12.28",
+ "resvg",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-log",
+ "tauri-plugin-single-instance",
+ "tokio",
+ "tower-http",
+ "usvg",
+ "uuid",
+ "windows 0.60.0",
 ]
 
 [[package]]

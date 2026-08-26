@@ -1,95 +1,72 @@
-# WebDesk — Universal Web App Desktop Manager
+# WebLaunch — Launch & host any web app as a native desktop app
 
-> A lightweight, high-control platform for running and managing web apps as native desktop applications, on **four platforms**: Windows / macOS / Linux / HarmonyOS.
+> A lightweight, high-control platform for running and managing web apps as native desktop applications: independent taskbar icons, background persistence, lifecycle hooks, a command-authorization bridge, and desktop shortcuts — across **four platforms** (Windows / macOS / Linux / HarmonyOS).
 
 English | [中文](./README.md)
 
-## What is WebDesk?
+## What is WebLaunch?
 
-WebDesk turns any web app into a "native desktop app" — with **per-app identity isolation** (cookies/keys/extensions), **lifecycle hooks**, **work-item driven lifecycle** (no always-on tray icon), **background persistence**, **desktop shortcuts**, and a **Web management console** that runs on the platform itself (dogfooding).
+WebLaunch turns any web app into a "native desktop app":
+
+- **Single-engine rendering** (Tauri 2 + system WebView)
+- **Per-app independent taskbar**: distinct AppUserModelID + icon, separated from the WebLaunch host
+- **Lifecycle hooks**: pre-launch / post-exit script hooks (paste bat code directly)
+- **Command-authorization bridge**: web pages may safely request local command execution; an approval dialog appears on first use, with an optional "don't ask again"
+- **Background persistence**: closing a window hides (not destroys) it; WebSocket stays alive
+- **Desktop shortcuts**: one-click, icon bound to the app itself
+- **Web management console**: the platform's own first built-in app (dogfooding)
 
 ## Core Features
 
-- **Single-engine rendering (system WebView via Tauri 2)** — WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux, ArkWeb on HarmonyOS.
-- **AppIdentity (ADR-009)** — cookies/keys/extensions isolated per app, managed uniformly by the platform.
-- **Lifecycle hooks** — pre-launch / post-exit script hooks; blocking mode, timeout, exit-code capture.
-- **Work-item driven lifecycle (ADR-010)** — the platform starts with the first app and exits when the last work item ends; no tray icon by default, appears only when background apps exist.
-- **Background persistence** — closing a window hides (not destroys) the renderer; WebSocket stays alive.
-- **Customizable UI** — per-app native controls, CSS/JS injection, per-app extensions.
-- **Desktop shortcuts** — one-click `.lnk` (or platform equivalent), `webdesk --launch <appId>`.
-- **Singleton + scheduling** — single daemon, IPC forwarding, fast launch.
-- **Web management console** — the console is itself the platform's first built-in web app.
+- **Single-engine rendering** — WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux, ArkWeb on HarmonyOS.
+- **Per-app identity isolation** — cookies / keys / extensions isolated per app.
+- **Lifecycle hooks** — pre-launch / post-exit, blocking/timeout/exit-code, bat script support.
+- **Command-authorization bridge** — `window.webdesk.exec()` authorizes local command execution, with "don't ask again".
+- **Background persistence** — window hides on close, process stays alive.
+- **Desktop shortcuts** — icon bound to the app, `weblaunch --launch <appId>`.
+- **UI customization** — per-app CSS/JS injection.
+- **Web console** — Chinese/English bilingual, auto-dismissing toast notifications.
+
+## Quick Start
+
+```bash
+# Single binary: weblaunch.exe is both CLI and daemon
+weblaunch addweb -url https://example.com -name "Example"
+weblaunch app list         # list apps
+weblaunch app launch <id>  # launch (separate window + taskbar icon)
+weblaunch console          # open management console
+weblaunch status           # platform status
+```
+
+> First launch auto-starts the daemon; the console opens at `http://127.0.0.1:3070`.
 
 ## Tech Stack (Decided — V1.7)
 
 | Layer | Choice |
 |---|---|
 | Framework | **Tauri 2** (Rust + Web frontend) |
-| Rendering | System WebView — Win=WebView2 / mac=WKWebView / Linux=WebKitGTK / HarmonyOS=ArkWeb |
+| Rendering | System WebView (Win=WebView2 / mac=WKWebView / Linux=WebKitGTK / HarmonyOS=ArkWeb) |
 | Console | Web (HTML/CSS/TS, platform's first app) |
-| Local HTTP | Rust `axum` (127.0.0.1 + random port + session token) |
-| System integration | Rust + tauri-plugin (tray / singleton / shortcuts / hooks / processes) |
-| Cross-platform | **Windows / macOS / Linux / HarmonyOS** |
+| Local HTTP | Rust `axum` (`127.0.0.1:3070`, fixed port, no auth) |
+| System integration | Rust + tauri-plugin |
 
-Full selection rationale: [`docs/design/2026-08-25-tech-selection.md`](docs/design/2026-08-25-tech-selection.md)
-
-## Repository Layout
-
-```
-webdesk/
-├── src/               # Rust daemon (scheduler / hooks / identity / server / platform)
-├── src-tauri/         # Tauri application (Rust + config)
-├── src-frontend/      # Management console (Web)
-├── docs/              # Requirements / design / ADRs
-│   ├── requirements/  # requirements-master.md (source of truth)
-│   └── design/        # ADR decision records + API contract
-├── AGENTS.md          # Development rules (read first)
-└── .github/           # CI/CD + issue/PR templates
-```
-
-## Build & Run
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (stable, MSVC toolchain on Windows)
-- [Node.js](https://nodejs.org/) ≥ 20 + npm
-- Windows: WebView2 runtime (preinstalled on Win11); Visual Studio Build Tools (MSVC)
-- Linux: `libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf`
-- macOS: Xcode Command Line Tools
-
-### Commands
+## Build &amp; Run
 
 ```bash
-# Frontend
-cd src-frontend && npm install && npm run dev   # dev server (port 1420)
-
-# Rust (Tauri)
+# Prereqs: Rust / Node ≥20 / WebView2 (Windows)
+cd src-frontend && npm install && npm run dev
 cargo tauri dev          # run in dev mode
-cargo build              # build Rust only
+cargo build              # build Rust
 cargo test               # run tests
-cargo clippy             # lint (zero warnings required)
-cargo fmt --check        # format check
-
-# Full bundle
-cargo tauri build        # production build + installer
+cargo clippy             # lint (zero warnings)
+cargo tauri build        # bundle installers
 ```
 
-> Requires `cargo-tauri` CLI: `cargo install tauri-cli --locked`
+## Docs
 
-## API Contract
-
-The management API (REST over localhost) is defined in [`docs/design/api-contract.md`](docs/design/api-contract.md). All `/api/*` endpoints require a `Bearer` session token; the base URL is `http://127.0.0.1:<random-port>`.
-
-## ADR Index
-
-See [`docs/requirements/requirements-master.md`](docs/requirements/requirements-master.md) §4 for the full ADR table (001–011), covering: AppIdentity, work-item lifecycle, single-engine rendering, Tauri four-platform selection, and more.
-
-## Roadmap
-
-- **M0** — Tauri skeleton + axum API + console + singleton (current)
-- **M1** — core: multi-window webview + hooks + identity + persistence + work-item lifecycle
-- **M2** — macOS/Linux adapters + extensions + self-update
-- **M3** — HarmonyOS (follows Tauri `feat/open-harmony`)
+- Usage guide: [`docs/guide/usage.md`](./docs/guide/usage.md) (hooks / shortcuts / authorization bridge)
+- API contract: [`docs/design/api-contract.md`](./docs/design/api-contract.md)
+- ADRs / requirements: [`docs/requirements/requirements-master.md`](./docs/requirements/requirements-master.md)
 
 ## License
 
