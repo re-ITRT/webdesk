@@ -346,7 +346,8 @@ function shortcutDialog(app: App): void {
     if (typeSel.value === "local") {
       icon = (document.getElementById("sc-local") as HTMLInputElement).value.trim() || undefined;
     } else if (typeSel.value === "auto") {
-      icon = app.url;
+      // 优先复用已绑定的 app.icon；未绑定才传 url 触发抓取
+      icon = app.icon || app.url;
     }
     try {
       const r = await api.createShortcut(app.id, icon);
