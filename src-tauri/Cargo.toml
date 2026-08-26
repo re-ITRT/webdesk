@@ -34,6 +34,8 @@ dirs = "5.0"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 regex = "1"
+resvg = "0.45"
+usvg = { version = "0.45", features = ["text"] }
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.60", features = [
     "Win32_Foundation",

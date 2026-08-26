@@ -63,13 +63,29 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // 日志：始终启用（debug + release），落盘到 %APPDATA%/WebDesk/logs/webdesk.log
+            // 便于排查问题（release 也有日志）
+            let log_dir = dirs::data_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("WebDesk")
+                .join("logs");
+            let _ = std::fs::create_dir_all(&log_dir);
+            let log_level = if cfg!(debug_assertions) {
+                log::LevelFilter::Debug
+            } else {
+                log::LevelFilter::Info
+            };
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log_level)
+                    .targets([
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                            file_name: None,
+                        }),
+                    ])
+                    .build(),
+            )?;
 
             // 初始化共享状态（store + scheduler）
             let state = AppState::init(app.handle())?;

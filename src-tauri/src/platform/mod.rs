@@ -449,12 +449,48 @@ pub fn fetch_app_icon(app_id: &str, url: &str) -> Option<std::path::PathBuf> {
         _ => return None,
     };
 
+    // 若下载的是 SVG，转成 PNG（Tauri Image / .lnk 不支持 SVG）
+    let is_svg = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)])
+        .trim_start()
+        .to_lowercase()
+        .starts_with("<svg");
+    if is_svg {
+        match svg_to_png(&bytes) {
+            Some(png_bytes) => {
+                if std::fs::write(&dest, &png_bytes).is_ok() {
+                    log::info!("[platform] 已获取应用图标(SVG→PNG): {icon_url} -> {dest:?}");
+                    return Some(dest);
+                }
+            }
+            None => log::warn!("[platform] SVG 图标转 PNG 失败: {icon_url}"),
+        }
+    }
+
     if std::fs::write(&dest, &bytes).is_ok() {
         log::info!("[platform] 已获取应用图标: {icon_url} -> {dest:?}");
         Some(dest)
     } else {
         None
     }
+}
+
+/// 将 SVG 字节渲染为 PNG 字节（用 resvg/usvg）
+fn svg_to_png(svg_bytes: &[u8]) -> Option<Vec<u8>> {
+    let opt = usvg::Options::default();
+    let tree = usvg::Tree::from_data(svg_bytes, &opt).ok()?;
+    let size = tree.size();
+    let width = size.width().ceil() as u32;
+    let height = size.height().ceil() as u32;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width.max(16), height.max(16))?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::default(),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.encode_png().ok()
 }
 
 /// 从图标 URL 生成安全的本地文件名：
