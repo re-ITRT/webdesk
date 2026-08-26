@@ -179,6 +179,7 @@ mod tests {
             hook_options: HookOptions::default(),
             ui_controls: UiControls::default(),
             injections: Injections::default(),
+            icon: String::new(),
             extensions: vec![],
             is_system: false,
             launch_on_boot: false,

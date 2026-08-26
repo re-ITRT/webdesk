@@ -122,15 +122,32 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
     let app_id = app.id.clone();
     let app_name = app.name.clone();
 
-    // 抓取应用自身图标（favicon），任务栏用独立图标而非 WebDesk 统一图标
-    // 用 spawn_blocking 避免在 runtime 线程做网络请求
+    // 应用图标（绑定到 app，而非每次现抓）：
+    // - 若 app.icon 已是本地路径 → 直接用
+    // - 否则抓取 favicon 并持久化到 app.icon（窗口/快捷方式共用）
     let app_id_for_icon = app.id.clone();
     let app_url_for_icon = app.url.clone();
-    let icon_path = tokio::task::spawn_blocking(move || {
-        crate::platform::fetch_app_icon(&app_id_for_icon, &app_url_for_icon)
-    })
-    .await
-    .unwrap_or(None);
+    let existing_icon = app.icon.clone();
+    let icon_path: Option<std::path::PathBuf> =
+        if !existing_icon.is_empty() && std::path::Path::new(&existing_icon).exists() {
+            Some(std::path::PathBuf::from(&existing_icon))
+        } else {
+            let fetched = tokio::task::spawn_blocking(move || {
+                crate::platform::fetch_app_icon(&app_id_for_icon, &app_url_for_icon)
+            })
+            .await
+            .unwrap_or(None);
+            // 抓取成功 → 持久化到 app.icon（完整路径，供窗口/快捷方式复用）
+            if let Some(path) = &fetched {
+                let icon_full = path.to_string_lossy().to_string();
+                let state = handle.state::<AppState>();
+                if let Ok(Some(mut updated)) = state.store.get(&app.id) {
+                    updated.icon = icon_full.clone();
+                    let _ = state.store.update(&app.id, updated);
+                }
+            }
+            fetched
+        };
 
     // 设置窗口图标：优先应用自身图标，回退 WebDesk 默认
     let mut builder = WebviewWindowBuilder::new(handle, label, WebviewUrl::External(url))
@@ -168,7 +185,17 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
         .build()
         .map_err(|e| anyhow::anyhow!("创建窗口失败: {e}"))?;
 
-    // Windows：设置窗口独立任务栏身份（独立 AUMID + 图标），
+    // 用 Tauri 直接设置窗口图标（确保任务栏/标题栏/Alt-Tab 都显示应用图标）
+    if let Some(path) = &icon_path {
+        if let Ok(bytes) = std::fs::read(path) {
+            if let Ok(img) = tauri::image::Image::from_bytes(&bytes) {
+                let _ = window.set_icon(img);
+                log::info!("[scheduler] 已设置窗口图标: {path:?}");
+            }
+        }
+    }
+
+    // Windows：设置窗口独立任务栏身份（独立 AUMID），
     // 使应用窗口在任务栏与 WebDesk 主进程完全分开
     #[cfg(target_os = "windows")]
     {
@@ -472,6 +499,7 @@ mod tests {
             hook_options: HookOptions::default(),
             ui_controls: UiControls::default(),
             injections: Injections::default(),
+            icon: String::new(),
             extensions: vec![],
             is_system: false,
             launch_on_boot: false,

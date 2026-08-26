@@ -138,6 +138,7 @@ pub fn ensure_system_apps(app: &AppHandle) -> anyhow::Result<()> {
             hook_options: crate::types::HookOptions::default(),
             ui_controls: crate::types::UiControls::default(),
             injections: crate::types::Injections::default(),
+            icon: String::new(),
             extensions: vec![],
             is_system: true,
             launch_on_boot: false,

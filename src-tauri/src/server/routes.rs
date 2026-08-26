@@ -594,8 +594,16 @@ async fn create_shortcut(
         Ok(a) => a,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
     };
-    // 可选图标：body 里的 "icon" 字段（.ico/.exe 路径，或 http(s) URL）
-    let icon = body.and_then(|Json(v)| v.get("icon").and_then(|i| i.as_str()).map(String::from));
+    // 图标来源优先级：body 里显式指定的 icon > 应用已绑定的 app.icon
+    let body_icon =
+        body.and_then(|Json(v)| v.get("icon").and_then(|i| i.as_str()).map(String::from));
+    let icon = body_icon.or_else(|| {
+        if app.icon.is_empty() {
+            None
+        } else {
+            Some(app.icon.clone())
+        }
+    });
     let name = app.name.clone();
     // 用平台能力真实创建桌面快捷方式（在独立线程池执行，避免阻塞 axum 响应线程，
     // 否则内部的 curl 访问本服务时自锁超时）

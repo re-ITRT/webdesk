@@ -11,6 +11,7 @@ export interface App {
   hook_options: { shell: string; timeout_ms: number; blocking: boolean };
   ui_controls: { address_bar: boolean; nav_buttons: boolean; refresh: boolean };
   injections: { css: string; js: string; timing: "document_start" | "document_idle" };
+  icon: string;
   extensions: string[];
   is_system: boolean;
   launch_on_boot: boolean;

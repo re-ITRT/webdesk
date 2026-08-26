@@ -21,6 +21,8 @@ pub struct App {
     pub hook_options: HookOptions,
     pub ui_controls: UiControls,
     pub injections: Injections,
+    /// 应用图标（本地路径或 URL，用于窗口/快捷方式/任务栏）
+    pub icon: String,
     /// 扩展路径列表（本地 unpacked）
     pub extensions: Vec<String>,
     /// 系统应用标记（管理控制台本身，不可普通删除）
@@ -233,6 +235,13 @@ impl App {
             })
             .unwrap_or_default();
 
+        // 应用图标（本地路径或 URL）
+        let icon = input
+            .get("icon")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
         let is_system = input
             .get("is_system")
             .and_then(|v| v.as_bool())
@@ -261,6 +270,7 @@ impl App {
             hook_options,
             ui_controls,
             injections,
+            icon,
             extensions,
             is_system,
             launch_on_boot,
@@ -287,6 +297,7 @@ mod tests {
             hook_options: HookOptions::default(),
             ui_controls: UiControls::default(),
             injections: Injections::default(),
+            icon: String::new(),
             extensions: vec![],
             is_system: false,
             launch_on_boot: false,
