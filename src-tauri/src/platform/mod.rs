@@ -339,6 +339,7 @@ pub fn current_exe() -> anyhow::Result<PathBuf> {
 /// - `icon`：可选图标来源——本地路径直接使用，http(s) URL 先下载到本地数据目录。
 ///
 /// 错误：桌面目录无法定位、平台命令执行失败或目标文件未生成时返回错误。
+#[allow(unused_variables)] // icon 仅 Windows 分支使用（.lnk 的 IconLocation）
 pub fn create_shortcut(
     app_name: &str,
     launch_arg: &str,
