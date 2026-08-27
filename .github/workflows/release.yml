@@ -43,6 +43,9 @@ jobs:
         working-directory: src-frontend
         run: npm ci
 
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --locked
+
       - name: Build bundle
         working-directory: src-tauri
         run: cargo tauri build --ci
