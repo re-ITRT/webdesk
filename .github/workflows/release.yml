@@ -44,10 +44,8 @@ jobs:
         run: npm ci
 
       - name: Build bundle
+        working-directory: src-tauri
         run: cargo tauri build --ci
-
-      - name: Build CLI binary
-        run: cargo build --release --bin webdesk-cli
 
       # 收集产物（各平台输出目录不同）
       - name: Collect Windows artifacts
@@ -64,7 +62,6 @@ jobs:
           mkdir -p dist
           cp -r src-tauri/target/release/bundle/dmg/*.dmg dist/ 2>/dev/null || true
           cp -r src-tauri/target/release/bundle/macos/*.app dist/ 2>/dev/null || true
-          cp src-tauri/target/release/webdesk-cli dist/ 2>/dev/null || true
           ls -la dist/
 
       - name: Collect Linux artifacts
@@ -73,7 +70,6 @@ jobs:
           mkdir -p dist
           cp -r src-tauri/target/release/bundle/deb/*.deb dist/ 2>/dev/null || true
           cp -r src-tauri/target/release/bundle/appimage/*.AppImage dist/ 2>/dev/null || true
-          cp src-tauri/target/release/webdesk-cli dist/ 2>/dev/null || true
           ls -la dist/
 
       - name: Upload artifacts
