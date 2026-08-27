@@ -350,15 +350,14 @@ pub fn create_shortcut(
 
     // icon 为 http(s) URL 时先下载到本地数据目录再使用
     // （Windows .lnk 的 IconLocation 仅接受本地路径）
-    let resolved_icon = match icon {
-        Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
-            Some(download_icon(url)?)
-        }
-        other => other.map(String::from),
-    };
-
     #[cfg(target_os = "windows")]
     {
+        let resolved_icon = match icon {
+            Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
+                Some(download_icon(url)?)
+            }
+            other => other.map(String::from),
+        };
         create_shortcut_windows(&dest, launch_arg, resolved_icon.as_deref())?;
     }
     #[cfg(target_os = "macos")]
@@ -740,15 +739,16 @@ fn create_shortcut_linux(
     launch_arg: &str,
 ) -> anyhow::Result<()> {
     let exe = current_exe()?;
+    let exe_display = exe.display();
     let content = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
          Name={name}\n\
          Comment=WebLaunch 启动器\n\
-         Exec=\"{exe}\" --launch={arg}\n\
+         Exec=\"{exe_display}\" --launch={arg}\n\
          Terminal=false\n\
          Categories=Network;WebBrowser;\n\
-         Icon={exe}\n",
+         Icon={exe_display}\n",
         name = app_name,
         arg = launch_arg,
     );
