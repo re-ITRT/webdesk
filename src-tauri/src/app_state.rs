@@ -1,4 +1,4 @@
-//! WebDesk 全局共享状态（AppState）
+//! WebLaunch 全局共享状态（AppState）
 //!
 //! `AppState` 由 Tauri `manage()` 注册为托管状态，各模块通过
 //! `tauri::State<AppState>` 注入访问，是 scheduler / server /
@@ -45,7 +45,7 @@ impl AppState {
     /// 初始化共享状态：创建配置存储、调度器与授权存储。
     ///
     /// 配置目录取 Tauri 的应用配置目录，获取失败时回退到
-    /// 系统临时目录下的 WebDesk 子目录。
+    /// 系统临时目录下的 WebLaunch 子目录。
     pub fn init(app: &AppHandle) -> anyhow::Result<Self> {
         let base_dir = app
             .path()
@@ -128,7 +128,7 @@ impl AppState {
 
 /// 预置系统应用（管理控制台）。
 ///
-/// 平台安装后即存在一个"WebDesk 控制台"系统应用（is_system=true），
+/// 平台安装后即存在一个"WebLaunch 控制台"系统应用（is_system=true），
 /// 其 URL 在 M0 阶段以 127.0.0.1:0 占位，运行时由 server 模块填充实际端口。
 /// 仅当存储中尚不存在该应用时创建，已存在则保持原样。
 pub fn ensure_system_apps(app: &AppHandle) -> anyhow::Result<()> {

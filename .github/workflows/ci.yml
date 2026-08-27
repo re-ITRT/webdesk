@@ -25,6 +25,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Build frontend (dist 供 tauri-build resources 引用)
+        working-directory: src-frontend
+        run: |
+          npm ci
+          npm run build
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -44,6 +49,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Build frontend (dist 供 tauri-build resources 引用)
+        working-directory: src-frontend
+        run: |
+          npm ci
+          npm run build
       - name: Run tests
         run: cargo test --all-features
 

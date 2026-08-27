@@ -1,7 +1,10 @@
-//! WebDesk store 模块 —— 应用配置存储
+//! WebLaunch store 模块 —— 应用配置存储
 //!
-//! 基于 JSON 文件的应用配置持久化。
-//! 存储目录：各平台配置目录（Windows=%APPDATA%/WebDesk/config，macOS=~/Library/Application Support/WebDesk/config，Linux=~/.config/WebDesk/config）。
+//! 基于 JSON 文件的应用配置持久化：每个应用一个 `<id>.json` 文件，
+//! 一文件一应用，天然支持并发读写隔离与人工排查。
+//! 存储目录：各平台配置目录（Windows=%APPDATA%/WebDesk/config，
+//! macOS=~/Library/Application Support/WebDesk/config，
+//! Linux=~/.config/WebDesk/config）。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,12 +15,19 @@ use uuid::Uuid;
 use crate::types::App;
 
 /// 应用配置存储
+///
+/// 以目录为根，提供应用配置的 CRUD 与 JSON 持久化。
+/// 所有方法均为同步文件 I/O，调用方需自行保证不在异步上下文
+/// 中长时间阻塞（或使用 `spawn_blocking`）。
 pub struct AppStore {
     dir: PathBuf,
 }
 
 impl AppStore {
     /// 创建存储（目录不存在则创建）
+    ///
+    /// 存储根为 `base_dir/WebDesk/config`；目录创建失败时返回
+    /// 带路径上下文的错误。
     pub fn new(base_dir: &Path) -> Result<Self> {
         let dir = base_dir.join("WebDesk").join("config");
         fs::create_dir_all(&dir).with_context(|| format!("创建配置目录失败: {}", dir.display()))?;
@@ -30,11 +40,16 @@ impl AppStore {
         &self.dir
     }
 
+    /// 计算指定应用对应的配置文件路径（`<id>.json`）
     fn path_for(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{id}.json"))
     }
 
     /// 列出所有应用
+    ///
+    /// 扫描配置目录下全部 `.json` 文件并解析为 `App`；单个文件
+    /// 解析失败时跳过（不中断整体列表），结果按应用名称排序。
+    /// 目录不存在时返回空列表。
     pub fn list(&self) -> Result<Vec<App>> {
         let mut apps = Vec::new();
         if !self.dir.exists() {
@@ -54,6 +69,7 @@ impl AppStore {
         Ok(apps)
     }
 
+    /// 从指定路径读取并解析单个应用配置
     fn read(&self, path: &Path) -> Result<App> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
@@ -63,6 +79,8 @@ impl AppStore {
     }
 
     /// 按 id 获取应用
+    ///
+    /// 文件不存在返回 `Ok(None)`；存在但读取/解析失败返回 `Err`。
     pub fn get(&self, id: &str) -> Result<Option<App>> {
         let path = self.path_for(id);
         if !path.exists() {
@@ -72,6 +90,10 @@ impl AppStore {
     }
 
     /// 创建应用（自动生成 id）
+    ///
+    /// 若传入的 `id` 为空则生成 UUID v4；`created_at` 为空时填充当前
+    /// ISO 时间，`updated_at` 始终刷新为当前时间，随后落盘并返回
+    /// 补全后的应用对象。
     pub fn create(&self, mut app: App) -> Result<App> {
         if app.id.is_empty() {
             app.id = Uuid::new_v4().to_string();
@@ -86,6 +108,11 @@ impl AppStore {
     }
 
     /// 更新应用（部分更新：缺失字段保留）
+    ///
+    /// 以现有记录为基底，仅用补丁中非空/非默认的字段覆盖：
+    /// 字符串字段空串表示不更新，`timeout_ms` 为 0 表示不更新，
+    /// 布尔字段（`is_system`、`launch_on_boot`、`hook_options.blocking`）
+    /// 始终采用补丁值。目标应用不存在时返回 `Ok(None)`。
     pub fn update(&self, id: &str, patch: App) -> Result<Option<App>> {
         let Some(mut existing) = self.get(id)? else {
             return Ok(None);
@@ -142,6 +169,8 @@ impl AppStore {
     }
 
     /// 删除应用
+    ///
+    /// 返回 `true` 表示已删除；文件不存在返回 `false`（幂等）。
     pub fn delete(&self, id: &str) -> Result<bool> {
         let path = self.path_for(id);
         if !path.exists() {
@@ -151,6 +180,7 @@ impl AppStore {
         Ok(true)
     }
 
+    /// 将应用序列化为美化 JSON 并写入其配置文件
     fn write(&self, app: &App) -> Result<()> {
         let content = serde_json::to_string_pretty(app).context("序列化应用配置失败")?;
         let path = self.path_for(&app.id);
@@ -165,12 +195,14 @@ mod tests {
     use super::*;
     use crate::types::{App, HookConfig, HookOptions, Injections, UiControls};
 
+    /// 创建一次性临时目录（测试隔离，用后即删）
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("webdesk-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
+    /// 构造最小可用的示例应用
     fn sample_app(name: &str) -> App {
         App {
             id: String::new(),
@@ -192,6 +224,7 @@ mod tests {
         }
     }
 
+    /// 创建 → 列表 → 读取 → 删除 全链路往返
     #[test]
     fn create_list_get_delete_roundtrip() {
         let dir = temp_dir();
@@ -212,6 +245,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// 部分更新：未设置的字段保持原值
     #[test]
     fn update_preserves_unset_fields() {
         let dir = temp_dir();
@@ -227,6 +261,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// 更新不存在的应用返回 None
     #[test]
     fn update_missing_returns_none() {
         let dir = temp_dir();

@@ -1,7 +1,9 @@
-//! WebDesk server 模块 —— HTTP 路由与端点实现
+//! WebLaunch server 模块 —— HTTP 路由与端点实现
 //!
-//! 基于 axum 的本地 REST API。所有 `/api/*` 需 Bearer token。
-//! 静态托管管理控制台（`src-frontend/dist`）。
+//! 基于 axum 的本地 REST API，绑定 `127.0.0.1:3070`。所有 `/api/*`
+//! 端点设计上要求 Bearer token 鉴权（token 由 [`crate::server::generate_token`]
+//! 生成并随 [`crate::types::ApiConfig`] 持久化；当前尚未接入强制校验中间件）。
+//! 同时以静态文件方式托管管理控制台前端（`src-frontend/dist`）。
 
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -19,6 +21,9 @@ use crate::store::AppStore;
 use crate::types::{ApiConfig, ApiError, App, AppStatus, PlatformStatus};
 
 /// 共享应用状态（axum 侧）
+///
+/// 通过 `Arc` 在路由处理器间共享：持有应用配置存储、会话 token、
+/// 服务启动时刻、实际监听端口及 Tauri 句柄。
 pub struct AppState {
     pub store: AppStore,
     pub token: String,
@@ -36,6 +41,18 @@ pub struct AppState {
 pub type SharedState = Arc<AppState>;
 
 /// 启动 HTTP 服务（后台任务）
+///
+/// 在独立 tokio runtime 中运行（由 `lib.rs` 的 setup 线程驱动）：
+/// 1. 初始化应用配置存储（`AppStore`，位于 Tauri 配置目录）；
+/// 2. 生成会话 token 并绑定 `127.0.0.1:3070`（端口被占用时返回错误，
+///    提示可能已有 daemon 实例在运行）；
+/// 3. 将 API 配置落盘并写入全局，供 CLI / 前端发现；
+/// 4. 将预置系统应用「WebLaunch 控制台」的 URL 更新为真实端口；
+/// 5. 按启动参数决定是否自动打开应用（`--launch=<id>` 优先，否则控制台；
+///    `--hidden` 时不打开任何窗口）；
+/// 6. 构建路由（API + 静态控制台托管）并进入服务循环。
+///
+/// 返回 `Err` 表示服务未能启动（如端口被占用）。
 pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
     // 配置目录
     let base_dir = tauri_handle
@@ -76,7 +93,7 @@ pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
     };
     crate::server::set_api_config(cfg);
 
-    // 把预置系统应用"WebDesk 控制台"的 URL 更新为真实端口
+    // 把预置系统应用"WebLaunch 控制台"的 URL 更新为真实端口
     // （app_state::ensure_system_apps 预置时用 127.0.0.1:0 占位）
     let console_url = format!("http://127.0.0.1:{port}");
     match state.store.get("console") {
@@ -128,7 +145,11 @@ pub async fn spawn(tauri_handle: tauri::AppHandle) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 构建路由
+/// 构建路由表
+///
+/// 注册全部 `/api/*` 端点（应用 CRUD、launch/terminate、exec 授权、
+/// 快捷方式、健康检查与平台状态），并以 `ServeDir` 托管控制台静态资源
+/// （SPA 路由回退到 `index.html`）。
 fn build_router(state: SharedState) -> Router {
     // CORS：允许任意来源（本地回环 API）。真正的安全边界是 Bearer token，
     // 不是 CORS——打包后 Tauri WebView 的 origin 是 tauri://localhost / http://tauri.localhost，
@@ -178,6 +199,11 @@ fn build_router(state: SharedState) -> Router {
 }
 
 /// 定位前端 dist 目录（开发 vs 打包）
+///
+/// 查找顺序：debug 构建沿可执行文件目录向上回溯寻找 `src-frontend/dist`
+/// （改代码立即生效）；打包后依次尝试 `resource_dir/webdesk/dist` 与
+/// `resource_dir/dist`；最后回退到相对路径 `../src-frontend/dist` 或
+/// `src-frontend/dist`。
 fn frontend_dist_dir(state: &SharedState) -> std::path::PathBuf {
     // 开发时（debug）：优先用项目 src-frontend/dist（改代码立即生效）
     if cfg!(debug_assertions) {
@@ -214,6 +240,8 @@ fn frontend_dist_dir(state: &SharedState) -> std::path::PathBuf {
 }
 
 /// 从状态取应用（不存在返回 404）
+///
+/// 存储读取失败映射为 `internal` 错误，应用不存在映射为 `not_found`。
 fn get_app_or_404(state: &SharedState, id: &str) -> Result<App, ApiError> {
     state
         .store
@@ -224,6 +252,9 @@ fn get_app_or_404(state: &SharedState, id: &str) -> Result<App, ApiError> {
 
 // ---------- 端点实现 ----------
 
+/// `GET /api/health` —— 健康检查
+///
+/// 返回服务状态、版本号、平台标识与进程 id，供 CLI 探测 daemon 存活。
 async fn health() -> Response {
     let os = if cfg!(windows) {
         "windows"
@@ -241,6 +272,10 @@ async fn health() -> Response {
     .into_response()
 }
 
+/// `GET /api/status` —— 平台运行状态
+///
+/// 从全局 [`crate::app_state::AppState`] 汇总运行中/后台应用 id 列表，
+/// 并返回版本、运行时长、内存占用（当前恒为 0）与实际监听端口。
 async fn status(State(state): State<SharedState>) -> Response {
     // 从全局 AppState 读运行状态（与 launch 同一状态源）
     let gstate = state.app_handle.state::<crate::app_state::AppState>();
@@ -268,6 +303,7 @@ async fn status(State(state): State<SharedState>) -> Response {
     Json(ps).into_response()
 }
 
+/// `GET /api/apps` —— 列出全部应用
 async fn list_apps(State(state): State<SharedState>) -> Response {
     match state.store.list() {
         Ok(apps) => Json(apps).into_response(),
@@ -278,6 +314,10 @@ async fn list_apps(State(state): State<SharedState>) -> Response {
     }
 }
 
+/// `POST /api/apps` —— 创建应用
+///
+/// 支持部分字段创建：`name`/`url` 必填，其余字段取默认值
+/// （见 [`App::from_partial`]）。成功返回 `201 Created` 与完整应用对象。
 async fn create_app(
     State(state): State<SharedState>,
     Json(input): Json<serde_json::Value>,
@@ -295,6 +335,7 @@ async fn create_app(
     }
 }
 
+/// `GET /api/apps/{id}` —— 获取单个应用
 async fn get_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     match get_app_or_404(&state, &id) {
         Ok(app) => Json(app).into_response(),
@@ -302,6 +343,12 @@ async fn get_app(State(state): State<SharedState>, Path(id): Path<String>) -> Re
     }
 }
 
+/// `PUT /api/apps/{id}` —— 更新应用（部分更新）
+///
+/// 请求体仅需包含要修改的字段：`name`/`url` 缺失或为空时用现有值补全，
+/// 其余字段由 [`AppStore::update`] 按「空值不覆盖」语义合并。
+/// 更新成功后若应用正在运行，异步触发 [`crate::scheduler::reload_app`]
+/// 重载窗口以应用新配置。
 async fn update_app(
     State(state): State<SharedState>,
     Path(id): Path<String>,
@@ -353,6 +400,10 @@ async fn update_app(
     }
 }
 
+/// `DELETE /api/apps/{id}` —— 删除应用
+///
+/// 系统应用（`is_system`）受保护不可删除，返回 `400`；删除成功返回
+/// `204 No Content`，应用不存在返回 `404`。
 async fn delete_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let app = match get_app_or_404(&state, &id) {
         Ok(app) => app,
@@ -373,6 +424,10 @@ async fn delete_app(State(state): State<SharedState>, Path(id): Path<String>) ->
     }
 }
 
+/// `POST /api/apps/{id}/restore` —— 恢复系统应用
+///
+/// 当前为简化实现：若应用已存在则原样返回，否则返回 `404`。
+/// 精确的按 id/类型重建逻辑计划自 M1 起实现。
 async fn restore_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     // 系统应用恢复：管理控制台（is_system）若缺失则重建
     let apps = match state.store.list() {
@@ -396,6 +451,10 @@ async fn restore_app(State(state): State<SharedState>, Path(id): Path<String>) -
     }
 }
 
+/// `POST /api/apps/{id}/launch` —— 启动应用
+///
+/// 委托 [`crate::scheduler::launch_by_id`] 创建 WebviewWindow 并执行
+/// 生命周期钩子。成功返回 `{"status":"running","windowId":<label>}`。
 async fn launch_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     // 经 app_handle 调用真实 scheduler（创建 WebviewWindow + 钩子 + 驻留）
     match crate::scheduler::launch_by_id(&state.app_handle, &id).await {
@@ -410,6 +469,10 @@ async fn launch_app(State(state): State<SharedState>, Path(id): Path<String>) ->
     }
 }
 
+/// `POST /api/apps/{id}/activate` —— 激活后台驻留应用
+///
+/// 当前为占位实现：仅校验应用存在并返回 `{"status":"active"}`，
+/// 未实际唤起窗口。
 async fn activate_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let _app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
@@ -418,6 +481,9 @@ async fn activate_app(State(state): State<SharedState>, Path(id): Path<String>) 
     Json(serde_json::json!({"status": "active"})).into_response()
 }
 
+/// `POST /api/apps/{id}/terminate` —— 终止应用
+///
+/// 委托 [`crate::scheduler::terminate_app`] 关闭应用窗口并执行退出钩子。
 async fn terminate_app(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let _app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
@@ -433,6 +499,10 @@ async fn terminate_app(State(state): State<SharedState>, Path(id): Path<String>)
     }
 }
 
+/// `GET /api/apps/{id}/status` —— 查询应用运行状态
+///
+/// 从全局 [`crate::app_state::AppState`] 读取状态（与 launch 同一状态源），
+/// 返回 `AppStatus`（窗口 id、内存、启动时刻当前均未填充）。
 async fn app_status(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let _app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
@@ -451,6 +521,10 @@ async fn app_status(State(state): State<SharedState>, Path(id): Path<String>) ->
     .into_response()
 }
 
+/// `GET /api/apps/{id}/identity` —— 应用身份隔离摘要
+///
+/// 经 [`crate::identity::IdentityManager`] 统计该应用的 cookie / 扩展 /
+/// 密钥等隔离资源概况。
 async fn identity_summary(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
@@ -461,11 +535,16 @@ async fn identity_summary(State(state): State<SharedState>, Path(id): Path<Strin
     Json(im.summary(&app)).into_response()
 }
 
-/// 网页请求执行命令（安全桥接）
+/// `POST /api/apps/{id}/exec` —— 网页请求执行命令（安全桥接）
 ///
-/// body: { "command": "explorer.exe C:\\file.txt", "remember": bool }
-/// - 该 app+command 已授权 → 直接执行，返回 {status:"executed", ...}
-/// - 未授权 → 返回 {status:"needs_approval", app_id, command}，桥接 JS 弹授权框
+/// body: `{ "command": "explorer.exe C:\\file.txt", "remember": bool }`
+///
+/// 行为：
+/// - 该 `app_id + command` 已授权且允许 → 直接执行，返回
+///   `{"status":"executed", ...}`；
+/// - 已授权但拒绝 → 返回 `403 denied`；
+/// - 未授权 → 返回 `{"status":"needs_approval", app_id, command}`，
+///   由桥接 JS 弹出授权框。
 async fn exec_command(
     State(state): State<SharedState>,
     Path(id): Path<String>,
@@ -509,11 +588,14 @@ async fn exec_command(
     .into_response()
 }
 
-/// 用户授权后执行（桥接 JS 弹框确认后调用）
+/// `POST /api/apps/{id}/exec/approve` —— 用户授权后执行
 ///
-/// body: { "command": "...", "allow": true, "remember": true }
-/// - remember=true → 记录授权（app+command）
-/// - allow=true → 执行命令
+/// body: `{ "command": "...", "allow": true, "remember": true }`
+///
+/// 行为：
+/// - `remember=true` → 将授权决定（允许/拒绝）持久化到
+///   [`crate::auth::AuthStore`]，此后不再弹框；
+/// - `allow=true` → 执行命令；否则返回 `403 denied`。
 async fn exec_approve(
     State(state): State<SharedState>,
     Path(id): Path<String>,
@@ -558,6 +640,9 @@ async fn exec_approve(
 }
 
 /// 执行命令（spawn，不阻塞等待完成；返回进程信息）
+///
+/// 以空白字符切分命令：首段为可执行程序，其余为参数。成功返回
+/// `{"status":"executed","pid":<pid>,"command":<原命令>}`。
 fn run_shell_command(app_id: &str, command: &str) -> Response {
     log::info!("[exec] 应用 {app_id} 执行命令: {command}");
     // 解析命令：以空格分隔首段为程序，其余为参数
@@ -585,6 +670,12 @@ fn run_shell_command(app_id: &str, command: &str) -> Response {
     }
 }
 
+/// `POST /api/apps/{id}/shortcut` —— 创建桌面快捷方式
+///
+/// 图标来源优先级：请求体显式指定的 `icon` > 应用已绑定的 `app.icon`。
+/// 实际创建委托 [`crate::platform::create_shortcut`]，并在独立线程池中
+/// 执行（`spawn_blocking`），避免阻塞 axum 响应线程——否则平台实现内部
+/// 回访本服务的请求会因自锁而超时。
 async fn create_shortcut(
     State(state): State<SharedState>,
     Path(id): Path<String>,
@@ -628,6 +719,10 @@ async fn create_shortcut(
     }
 }
 
+/// `DELETE /api/apps/{id}/shortcut` —— 移除桌面快捷方式
+///
+/// 当前为占位实现：仅校验应用存在并返回 `{"removed":true}`，
+/// 未实际删除快捷方式文件。
 async fn remove_shortcut(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     let _app = match get_app_or_404(&state, &id) {
         Ok(a) => a,
@@ -638,6 +733,7 @@ async fn remove_shortcut(State(state): State<SharedState>, Path(id): Path<String
 
 // ---------- 辅助 ----------
 
+/// 构造统一错误响应（HTTP 状态码 + `ApiError` JSON 体）
 fn err_response(code: StatusCode, err: ApiError) -> Response {
     (code, Json(err)).into_response()
 }

@@ -1,4 +1,4 @@
-//! WebDesk 调度器模块 —— 应用生命周期调度
+//! WebLaunch 调度器模块 —— 应用生命周期调度
 //!
 //! 职责：负责应用窗口的启动 / 激活 / 终止 / 重载与后台驻留（close_action=background
 //! 时关窗隐藏、quit 时直接关闭），为每个应用创建独立的 WebviewWindow，并在
@@ -160,7 +160,7 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
             fetched
         };
 
-    // 装配窗口：优先使用应用图标，解码失败或缺失时回退 WebDesk 默认图标
+    // 装配窗口：优先使用应用图标，解码失败或缺失时回退 WebLaunch 默认图标
     let mut builder = WebviewWindowBuilder::new(handle, label, WebviewUrl::External(url))
         .title(&app_name)
         .inner_size(1024.0, 720.0)
@@ -207,7 +207,7 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
     }
 
     // Windows 专属：为窗口设置独立的任务栏身份（独立 AUMID），
-    // 使应用窗口在任务栏上与 WebDesk 主进程完全分离
+    // 使应用窗口在任务栏上与 WebLaunch 主进程完全分离
     #[cfg(target_os = "windows")]
     {
         let icon_str = icon_path.as_ref().map(|p| p.to_string_lossy().to_string());
@@ -297,7 +297,7 @@ fn inject_webview(window: &tauri::WebviewWindow, app: &App) {
       const box = document.createElement('div');
       box.style.cssText = 'background:#fff;color:#111;border-radius:10px;padding:24px;max-width:440px;width:90%;box-shadow:0 8px 30px rgba(0,0,0,.3);';
       box.innerHTML = `
-        <h3 style="margin:0 0 12px;font-size:16px;">WebDesk 命令授权</h3>
+        <h3 style="margin:0 0 12px;font-size:16px;">WebLaunch 命令授权</h3>
         <p style="margin:0 0 8px;font-size:13px;color:#555;">应用请求执行以下本地命令：</p>
         <pre style="background:#f5f5f5;padding:10px;border-radius:6px;font-size:12px;word-break:break-all;white-space:pre-wrap;margin:0 0 14px;">${{escapeHtml(command)}}</pre>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:16px;cursor:pointer;">

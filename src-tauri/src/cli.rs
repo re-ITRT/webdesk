@@ -1,18 +1,18 @@
-//! WebDesk 单二进制 CLI/daemon —— CLI 模式核心逻辑
+//! WebLaunch 单二进制 CLI/daemon —— CLI 模式核心逻辑
 //!
-//! 同一个 exe 既是 CLI 又是 daemon（服务器）：
-//! - 无参数 / --hidden → daemon 模式（webdesk_lib::run()）
-//! - addweb / app ... / status 等 → CLI 模式（本模块）
+//! 同一个可执行文件既是 CLI 又是 daemon（服务器）：
+//! - 无参数 / `--hidden` → daemon 模式（`webdesk_lib::run()`）
+//! - `addweb` / `app ...` / `status` 等 → CLI 模式（本模块）
 //!
-//! CLI 模式：若 daemon 未运行，自动以 --hidden 重启自身作为 daemon，
-//! 再通过本地 HTTP 管理 API 通信。
+//! CLI 模式：若 daemon 未运行，自动以 `--hidden` 重启自身作为 daemon
+//! （单二进制自举），再通过本地 HTTP 管理 API 通信。
 
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
-/// WebDesk 命令行工具
+/// WebLaunch 命令行工具
 #[derive(Parser)]
 #[command(
     name = "weblaunch",
@@ -24,6 +24,7 @@ struct Cli {
     command: Commands,
 }
 
+/// CLI 子命令集合
 #[derive(Subcommand)]
 enum Commands {
     /// 添加 Web 应用（别名 addweb）
@@ -62,6 +63,7 @@ enum Commands {
     Version,
 }
 
+/// 应用管理子命令
 #[derive(Subcommand)]
 enum AppCommands {
     /// 列出全部应用
@@ -83,6 +85,8 @@ enum AppCommands {
 }
 
 /// CLI 入口（main.rs 检测到 CLI 参数时调用）
+///
+/// 返回进程退出码：0 成功、1 命令执行失败、2 参数解析错误。
 pub fn run_cli() -> i32 {
     // 兼容用户习惯的多字符短选项：-url xxx / -name xxx / -hook xxx / -hook_exit xxx
     let args: Vec<String> = std::env::args()
@@ -151,6 +155,10 @@ pub fn run_cli() -> i32 {
 
 // ---------- daemon 发现 ----------
 
+/// 确保 daemon 在运行，返回其监听端口
+///
+/// 先探测固定端口 3070；未响应则以 `--hidden` 自举启动 daemon，
+/// 并轮询等待其就绪（最长约 5 秒）。超时返回错误。
 fn ensure_daemon() -> Result<u16, String> {
     const PORT: u16 = 3070;
     if ping_daemon(PORT) {
@@ -167,6 +175,7 @@ fn ensure_daemon() -> Result<u16, String> {
     Err("daemon 启动超时".into())
 }
 
+/// 探测 daemon 健康端点（500ms 超时，失败视为未运行）
 fn ping_daemon(port: u16) -> bool {
     let client = reqwest::blocking::Client::new();
     client
@@ -178,6 +187,8 @@ fn ping_daemon(port: u16) -> bool {
 }
 
 /// 以 --hidden 重启自身作为 daemon（单二进制自举）
+///
+/// 子进程句柄立即丢弃：daemon 生命周期独立于 CLI 进程。
 fn spawn_daemon() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let child = Command::new(&exe)
@@ -190,10 +201,12 @@ fn spawn_daemon() -> Result<(), String> {
 
 // ---------- HTTP 请求 ----------
 
+/// 拼接本地 API 完整 URL
 fn api_url(port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{path}")
 }
 
+/// GET 请求并解析 JSON 响应
 fn get_json(port: u16, path: &str) -> Result<Value, String> {
     let client = reqwest::blocking::Client::new();
     let resp = client
@@ -203,6 +216,7 @@ fn get_json(port: u16, path: &str) -> Result<Value, String> {
     parse_response(resp)
 }
 
+/// POST 请求（可选 JSON body）并解析响应
 fn post_json(port: u16, path: &str, body: Option<Value>) -> Result<Value, String> {
     let client = reqwest::blocking::Client::new();
     let mut req = client.post(api_url(port, path));
@@ -213,6 +227,10 @@ fn post_json(port: u16, path: &str, body: Option<Value>) -> Result<Value, String
     parse_response(resp)
 }
 
+/// 统一解析 HTTP 响应
+///
+/// 成功：空 body 视为 `Null`，否则解析为 JSON；
+/// 失败：优先提取响应体中的 `message` 字段，回退到原始 body。
 fn parse_response(resp: reqwest::blocking::Response) -> Result<Value, String> {
     let status = resp.status();
     let body = resp.text().unwrap_or_default();
@@ -233,6 +251,10 @@ fn parse_response(resp: reqwest::blocking::Response) -> Result<Value, String> {
 
 // ---------- 命令实现 ----------
 
+/// `addweb`：添加 Web 应用
+///
+/// 确保 daemon 运行后，经 `POST /api/apps` 创建应用；URL 自动补全
+/// `http://` 前缀，钩子参数以分号分隔多条命令。成功后打印应用 id。
 fn cmd_add(
     name: &str,
     url: &str,
@@ -266,6 +288,7 @@ fn cmd_add(
     Ok(())
 }
 
+/// 规范化 URL：去首尾空白，缺协议时补 `http://`
 fn normalize_url(url: &str) -> Result<String, String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
@@ -278,6 +301,7 @@ fn normalize_url(url: &str) -> Result<String, String> {
     }
 }
 
+/// 按分号拆分钩子命令串（去空白、过滤空项）
 fn split_hooks(s: &str) -> Vec<String> {
     s.split(';')
         .map(|x| x.trim().to_string())
@@ -285,6 +309,7 @@ fn split_hooks(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// `app list`：列出全部应用（含运行状态与系统标记）
 fn cmd_list() -> Result<(), String> {
     let port = ensure_daemon()?;
     let apps = get_json(port, "/api/apps")?;
@@ -319,6 +344,7 @@ fn cmd_list() -> Result<(), String> {
     Ok(())
 }
 
+/// 查询单个应用的运行状态字符串
 fn app_running_state(port: u16, id: &str) -> Result<String, String> {
     let st = get_json(port, &format!("/api/apps/{id}/status"))?;
     Ok(st
@@ -328,6 +354,7 @@ fn app_running_state(port: u16, id: &str) -> Result<String, String> {
         .to_string())
 }
 
+/// `app get`：以美化 JSON 输出单个应用详情
 fn cmd_get(id: &str) -> Result<(), String> {
     let port = ensure_daemon()?;
     let app = get_json(port, &format!("/api/apps/{id}"))?;
@@ -335,6 +362,7 @@ fn cmd_get(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `app remove`：删除应用
 fn cmd_remove(id: &str) -> Result<(), String> {
     let port = ensure_daemon()?;
     let client = reqwest::blocking::Client::new();
@@ -350,6 +378,7 @@ fn cmd_remove(id: &str) -> Result<(), String> {
     }
 }
 
+/// `app launch`：启动应用
 fn cmd_launch(id: &str) -> Result<(), String> {
     let port = ensure_daemon()?;
     let resp = post_json(port, &format!("/api/apps/{id}/launch"), None)?;
@@ -362,6 +391,7 @@ fn cmd_launch(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `app stop`：终止应用
 fn cmd_stop(id: &str) -> Result<(), String> {
     let port = ensure_daemon()?;
     let resp = post_json(port, &format!("/api/apps/{id}/terminate"), None)?;
@@ -370,6 +400,7 @@ fn cmd_stop(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `app activate`：激活后台驻留应用
 fn cmd_activate(id: &str) -> Result<(), String> {
     let port = ensure_daemon()?;
     let resp = post_json(port, &format!("/api/apps/{id}/activate"), None)?;
@@ -378,6 +409,7 @@ fn cmd_activate(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `app status`：查看应用状态
 fn cmd_app_status(id: &str) -> Result<(), String> {
     let port = ensure_daemon()?;
     let st = get_json(port, &format!("/api/apps/{id}/status"))?;
@@ -386,6 +418,7 @@ fn cmd_app_status(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `app shortcut`：创建桌面快捷方式
 fn cmd_shortcut(id: &str) -> Result<(), String> {
     let port = ensure_daemon()?;
     let resp = post_json(port, &format!("/api/apps/{id}/shortcut"), None)?;
@@ -401,6 +434,7 @@ fn cmd_shortcut(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `status`：平台整体状态（版本 / 端口 / 运行中与后台应用 / 运行时长）
 fn cmd_platform_status() -> Result<(), String> {
     let port = ensure_daemon()?;
     let st = get_json(port, "/api/status")?;
@@ -422,6 +456,7 @@ fn cmd_platform_status() -> Result<(), String> {
     Ok(())
 }
 
+/// 将 JSON 字符串数组格式化为逗号分隔文本（空列表显示「无」）
 fn json_str_list(v: Option<&Value>) -> String {
     v.and_then(|x| x.as_array())
         .map(|arr| {
@@ -434,6 +469,7 @@ fn json_str_list(v: Option<&Value>) -> String {
         .unwrap_or_else(|| "（无）".into())
 }
 
+/// `console`：打开管理控制台
 fn cmd_console() -> Result<(), String> {
     let port = ensure_daemon()?;
     let resp = post_json(port, "/api/apps/console/launch", None)?;
@@ -442,6 +478,7 @@ fn cmd_console() -> Result<(), String> {
     Ok(())
 }
 
+/// `version`：显示版本号
 fn cmd_version() -> Result<(), String> {
     println!("weblaunch {}", env!("CARGO_PKG_VERSION"));
     Ok(())

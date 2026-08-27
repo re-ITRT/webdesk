@@ -1,4 +1,4 @@
-//! WebDesk 钩子模块 —— 生命周期钩子执行器
+//! WebLaunch 钩子模块 —— 生命周期钩子执行器
 //!
 //! 职责：执行 preLaunch / postExit 钩子命令（支持 cmd / powershell / wsl / sh 四种
 //! shell），提供阻塞 / 非阻塞执行、超时强制终止（含进程树）、退出码采集、
@@ -108,7 +108,7 @@ fn kill_tree(pid: u32) {
 /// 执行单个钩子命令（支持超时强制终止）。
 ///
 /// 若命令为多行 bat 代码（含换行或以 `@echo off` 开头）且 shell 为 cmd，会先写入
-/// WebDesk 钩子目录下的临时 .bat 文件再执行，以便用户直接在钩子中填写批处理脚本
+/// WebLaunch 钩子目录下的临时 .bat 文件再执行，以便用户直接在钩子中填写批处理脚本
 /// （如 `@echo off` + `start ...` 后台启动服务）；执行完毕后清理临时文件。
 pub fn run_hook(event: &str, command: &str, options: &HookOptions) -> HookResult {
     let start = std::time::Instant::now();
@@ -213,7 +213,7 @@ fn run_hook_inner(
     result
 }
 
-/// 钩子 bat 文件目录（WebDesk 数据目录下 hooks），确保目录存在后返回
+/// 钩子 bat 文件目录（WebLaunch 数据目录下 hooks），确保目录存在后返回
 fn bat_dir() -> std::path::PathBuf {
     let dir = dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)

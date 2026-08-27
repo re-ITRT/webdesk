@@ -1,4 +1,4 @@
-//! WebDesk 共享类型层（单一事实来源）
+//! WebLaunch 共享类型层（单一事实来源）
 //!
 //! 所有模块（store / server / scheduler / hooks / identity / platform / frontend）
 //! 必须使用此处定义的类型，不得自行重定义。
