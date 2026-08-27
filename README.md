@@ -65,6 +65,7 @@ cargo tauri build        # 打包安装包
 ## 文档
 
 - 使用指南：[`docs/guide/usage.md`](./docs/guide/usage.md)（含钩子 / 快捷方式 / 授权桥用法）
+- **代码导航**：[`docs/guide/code-map.md`](./docs/guide/code-map.md)（功能 → 代码位置，总分结构）
 - 管理 API 契约：[`docs/design/api-contract.md`](./docs/design/api-contract.md)
 - ADR / 需求：[`docs/requirements/requirements-master.md`](./docs/requirements/requirements-master.md)
 

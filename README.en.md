@@ -65,6 +65,7 @@ cargo tauri build        # bundle installers
 ## Docs
 
 - Usage guide: [`docs/guide/usage.md`](./docs/guide/usage.md) (hooks / shortcuts / authorization bridge)
+- **Code map**: [`docs/guide/code-map.md`](./docs/guide/code-map.md) (feature → code, general-to-specific)
 - API contract: [`docs/design/api-contract.md`](./docs/design/api-contract.md)
 - ADRs / requirements: [`docs/requirements/requirements-master.md`](./docs/requirements/requirements-master.md)
 
