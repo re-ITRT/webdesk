@@ -1,16 +1,16 @@
 //! WebDesk —— 通用 Web 应用桌面化管理平台（Tauri 2，四平台）
 //!
-//! 本 crate 是平台 daemon 核心，包含：
-//! - `types`：共享类型层（所有模块的事实标准）
-//! - `store`：应用配置持久化
-//! - `hooks`：生命周期钩子执行器
-//! - `scheduler`：应用生命周期调度（创建/管理 WebviewWindow）
-//! - `identity`：应用身份隔离
-//! - `platform`：平台差异抽象（托盘/快捷方式/自启）
-//! - `server`：本地 HTTP 管理 API（axum）
+//! 本 crate 为平台守护进程（daemon）核心，按职责划分为以下模块：
+//! - `types`：共享类型层，全平台类型定义的唯一事实来源
+//! - `store`：应用配置的持久化存储
+//! - `hooks`：应用生命周期钩子（pre_launch / post_exit）执行器
+//! - `scheduler`：应用生命周期调度，负责 WebviewWindow 的创建、激活与销毁
+//! - `identity`：应用身份隔离（cookie / 扩展 / 凭据）
+//! - `platform`：平台差异抽象（托盘 / 快捷方式 / 开机自启）
+//! - `server`：本地 HTTP 管理 API（axum 实现）
 //!
-//! 关联 ADR：ADR-007（管理控制台 Web 化）、ADR-009（应用身份）、
-//! ADR-010（工作项生命周期）、ADR-011（单引擎）。开发范式见
+//! 设计决策参见 ADR-007（管理控制台 Web 化）、ADR-009（应用身份）、
+//! ADR-010（工作项生命周期）、ADR-011（单引擎）；开发范式见
 //! `docs/design/dev-paradigm.md`，接口契约见 `docs/design/api-contract.md`。
 
 mod app_state;
@@ -30,15 +30,21 @@ pub use cli::run_cli;
 use app_state::AppState;
 use tauri::Manager;
 
-/// 应用启动入口
+/// 应用启动入口：装配 Tauri 运行时并进入事件循环。
+///
+/// 负责注册单例转发、开机自启、日志、共享状态、系统应用预置与
+/// 本地管理 API 等插件及初始化逻辑；移动端入口由
+/// `#[cfg_attr(mobile, tauri::mobile_entry_point)]` 自动生成。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
 
-    // 单例：第二个实例启动时把参数转发给主实例
+    // 单例插件：第二个实例启动时不再创建新进程，而是把命令行参数
+    // 转发给主实例，由主实例决定唤起哪个应用。
     builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
         let handle = app.app_handle().clone();
-        // 若带了 --launch=<id>，唤起对应应用；否则（无参双击图标）默认唤起控制台
+        // 解析 --launch=<id> 参数：命中则唤起对应应用；
+        // 无参（如双击图标）时默认唤起管理控制台。
         let target = argv
             .iter()
             .find(|a| a.starts_with("--launch="))
@@ -54,7 +60,7 @@ pub fn run() {
         });
     }));
 
-    // 开机自启插件（默认关闭，经平台模块控制）
+    // 开机自启插件：默认不启用，由 platform 模块按需开启/关闭。
     builder = builder.plugin(
         tauri_plugin_autostart::Builder::new()
             .args(["--hidden"])
@@ -63,8 +69,9 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            // 日志：始终启用（debug + release），落盘到 %APPDATA%/WebDesk/logs/webdesk.log
-            // 便于排查问题（release 也有日志）
+            // 日志初始化：debug 构建输出 Debug 级、release 构建输出 Info 级，
+            // 同时写入 stdout 与 %APPDATA%/WebDesk/logs/ 目录，
+            // 保证 release 版本同样可落盘排查问题。
             let log_dir = dirs::data_dir()
                 .unwrap_or_else(std::env::temp_dir)
                 .join("WebDesk")
@@ -87,16 +94,17 @@ pub fn run() {
                     .build(),
             )?;
 
-            // 初始化共享状态（store + scheduler）
+            // 初始化全局共享状态（配置存储 + 调度器 + 授权存储）并注册为 Tauri 托管状态。
             let state = AppState::init(app.handle())?;
             app.manage(state);
 
-            // 预置系统应用（管理控制台）
+            // 预置系统应用：确保管理控制台（is_system=true）在首次安装后即存在。
             if let Err(e) = app_state::ensure_system_apps(app.handle()) {
                 log::error!("预置系统应用失败: {e}");
             }
 
-            // 启动本地 HTTP 管理 API（后台 tokio 任务）
+            // 在独立线程中创建 tokio runtime 并启动本地 HTTP 管理 API，
+            // 避免阻塞 Tauri 主线程。
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");

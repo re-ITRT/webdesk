@@ -1,12 +1,24 @@
-// WebDesk 管理控制台（吃自己的狗粮：本页即运行在 WebDesk 上的第一个 Web 应用）
-// 功能：应用网格 / 增删改查 / 启动·激活·终止 / 平台状态 / 侧边栏 / 设置(i18n)
+/**
+ * WebLaunch 管理控制台（吃自己的狗粮：本页面即运行在 WebLaunch 上的第一个 Web 应用）。
+ *
+ * 功能：应用网格 / 增删改查 / 启动·激活·终止 / 平台状态 / 侧边栏 / 设置(i18n)。
+ * 纯前端实现：不依赖任何框架，通过 api.ts 与后端 REST 服务通信。
+ */
 
 import { api, initApi, App, PlatformStatus } from "./api";
 
+/** 应用挂载点（index.html 中的 #app 容器） */
 const appEl = document.getElementById("app")!;
 
 // ---------- i18n ----------
+
+/** 界面语言类型 */
 type Lang = "zh" | "en";
+
+/**
+ * 国际化文案表：按语言分组的 key-value 映射。
+ * 所有界面文案必须通过 t() 取词，禁止硬编码。
+ */
 const I18N: Record<Lang, Record<string, string>> = {
   zh: {
     app: "应用",
@@ -130,10 +142,19 @@ const I18N: Record<Lang, Record<string, string>> = {
   },
 };
 
+/** 当前语言（从 localStorage 恢复，默认中文） */
 let lang: Lang = (localStorage.getItem("webdesk-lang") as Lang) || "zh";
+
+/**
+ * 取当前语言的文案；key 不存在时原样返回 key（便于排查缺失词条）。
+ */
 function t(key: string): string {
   return I18N[lang][key] || key;
 }
+
+/**
+ * 切换界面语言：更新内存状态、持久化到 localStorage 并整体重渲染。
+ */
 function setLang(l: Lang) {
   lang = l;
   localStorage.setItem("webdesk-lang", l);
@@ -141,17 +162,37 @@ function setLang(l: Lang) {
 }
 
 // ---------- DOM helpers ----------
+
+/**
+ * 创建带属性与子节点的元素。
+ * 字符串子节点自动转为文本节点，避免 XSS 风险（不解析 HTML）。
+ */
 function h(tag: string, attrs: Record<string, string> = {}, children: (string | HTMLElement)[] = []): HTMLElement {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
   for (const c of children) el.append(c instanceof HTMLElement ? c : document.createTextNode(c));
   return el;
 }
+
+/**
+ * 创建指定标签的强类型元素（返回具体元素类型而非 HTMLElement）。
+ */
 function el<K extends keyof HTMLElementTagNameMap>(tag: K): HTMLElementTagNameMap[K] {
   return document.createElement(tag);
 }
 
 // ---------- 消息提醒（toast，自动消失） ----------
+
+/**
+ * 显示一条自动消失的 toast 消息。
+ *
+ * 首次调用时惰性创建全局容器 #toast-container；
+ * 通过 .show 类触发 CSS 过渡，消失动画结束后移除节点。
+ *
+ * @param message 消息文本
+ * @param type 消息类型（error 附加错误样式）
+ * @param duration 显示时长（毫秒）
+ */
 function toast(message: string, type: "info" | "error" = "info", duration = 2500): void {
   let container = document.getElementById("toast-container");
   if (!container) {
@@ -163,16 +204,24 @@ function toast(message: string, type: "info" | "error" = "info", duration = 2500
   t.className = `toast ${type === "error" ? "error" : ""}`;
   t.textContent = message;
   container.appendChild(t);
+  // 下一帧再添加 .show，确保入场过渡动画生效
   requestAnimationFrame(() => t.classList.add("show"));
   setTimeout(() => {
     t.classList.remove("show");
+    // 等待退场过渡（300ms）结束后再移除 DOM 节点
     setTimeout(() => t.remove(), 300);
   }, duration);
 }
 
 // ---------- 视图状态 ----------
+
+/** 当前激活的视图：应用列表或设置 */
 let currentView: "apps" | "settings" = "apps";
 
+/**
+ * 整体渲染入口：重建布局骨架（侧边栏 + 主区域 + 模态框容器），
+ * 绑定导航事件，并按当前视图分发渲染。
+ */
 function render(): void {
   appEl.innerHTML = "";
   appEl.append(
@@ -192,6 +241,7 @@ function render(): void {
     h("div", { id: "modal", class: "modal hidden" }),
   );
 
+  // 侧边栏导航：切换视图后整体重渲染
   document.getElementById("nav-apps")!.onclick = () => { currentView = "apps"; render(); };
   document.getElementById("nav-settings")!.onclick = () => { currentView = "settings"; render(); };
 
@@ -200,6 +250,11 @@ function render(): void {
 }
 
 // ---------- 应用视图 ----------
+
+/**
+ * 渲染应用列表视图：工具栏（刷新/添加）、状态栏与卡片网格容器，
+ * 并触发一次数据刷新。
+ */
 function renderApps(): void {
   const view = document.getElementById("view-apps")!;
   view.innerHTML = "";
@@ -217,6 +272,10 @@ function renderApps(): void {
   refreshAll();
 }
 
+/**
+ * 刷新全部数据：并行拉取平台状态与应用列表，
+ * 更新状态栏摘要（版本/运行数/后台数/端口/内存），失败时展示连接错误。
+ */
 async function refreshAll(): Promise<void> {
   const statusEl = document.getElementById("status-bar")!;
   const grid = document.getElementById("grid")!;
@@ -230,6 +289,13 @@ async function refreshAll(): Promise<void> {
   }
 }
 
+/**
+ * 渲染应用卡片网格。
+ *
+ * 每张卡片展示图标、名称、运行状态徽标、URL 与引擎/关窗行为，
+ * 操作按钮通过 data-act/data-id 标记动作，统一由 handleAction 分发。
+ * 系统内置应用不显示删除按钮。
+ */
 function renderGrid(apps: App[], status: PlatformStatus): void {
   const grid = document.getElementById("grid")!;
   for (const app of apps) {
@@ -250,7 +316,9 @@ function renderGrid(apps: App[], status: PlatformStatus): void {
         h("div", { class: "muted" }, [`${t("engine")} ${app.runtime_profile} · ${t("close")} ${app.close_action === "background" ? t("dwell") : t("quit")}`]),
       ]),
       h("div", { class: "card-actions" }, [
+        // 运行中显示"激活"，否则显示"启动"
         h("button", { "data-act": "launch", "data-id": app.id }, running ? [t("activate")] : [t("launch")]),
+        // 未运行且未驻留时禁用"终止"
         h("button", { "data-act": "terminate", "data-id": app.id, disabled: !running && !background ? "true" : "" }, [t("terminate")]),
         h("button", { "data-act": "edit", "data-id": app.id }, [t("edit")]),
         h("button", { "data-act": "shortcut", "data-id": app.id, title: t("shortcut") }, [t("shortcut")]),
@@ -259,12 +327,16 @@ function renderGrid(apps: App[], status: PlatformStatus): void {
     ]);
     grid.append(card);
   }
+  // 事件委托：为所有动作按钮统一绑定点击处理
   grid.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((btn) => {
     btn.onclick = () => handleAction(btn.dataset.act!, btn.dataset.id!);
   });
 }
 
-/** 从应用 URL 提取 favicon 地址（Google favicon 服务，无后端依赖） */
+/**
+ * 从应用 URL 提取 favicon 地址（Google favicon 服务，无后端依赖）。
+ * URL 解析失败时返回内置占位图标（灰色 "W" SVG）。
+ */
 function faviconUrl(url: string): string {
   try {
     const host = new URL(url).hostname;
@@ -274,6 +346,17 @@ function faviconUrl(url: string): string {
   }
 }
 
+/**
+ * 卡片动作统一分发：按 data-act 执行对应 API 调用。
+ *
+ * - launch：启动（或激活）应用；
+ * - terminate：终止应用；
+ * - edit：拉取详情后打开编辑对话框；
+ * - delete / unshortcut：先 confirm 确认再执行；
+ * - shortcut：打开快捷方式创建对话框（不触发列表刷新）。
+ *
+ * 操作完成后刷新列表；任何失败均以 error toast 提示。
+ */
 async function handleAction(act: string, id: string): Promise<void> {
   try {
     if (act === "launch") {
@@ -300,6 +383,11 @@ async function handleAction(act: string, id: string): Promise<void> {
 }
 
 // ---------- 设置视图 ----------
+
+/**
+ * 渲染设置视图：目前仅提供界面语言选择，
+ * 切换后立即持久化并重渲染整个界面。
+ */
 function renderSettings(): void {
   const view = document.getElementById("view-settings")!;
   view.innerHTML = "";
@@ -324,6 +412,17 @@ function renderSettings(): void {
 }
 
 // ---------- 快捷方式对话框 ----------
+
+/**
+ * 打开"创建桌面快捷方式"对话框。
+ *
+ * 图标来源三选一：
+ * - default：使用默认图标；
+ * - local：手动填写本地 .ico 文件路径；
+ * - auto：自动抓取网页图标（优先复用已绑定的 app.icon）。
+ *
+ * 选择来源时联动显示/隐藏对应输入区。
+ */
 function shortcutDialog(app: App): void {
   const modal = document.getElementById("modal")!;
   modal.classList.remove("hidden");
@@ -357,6 +456,7 @@ function shortcutDialog(app: App): void {
   const typeSel = document.getElementById("sc-icon-type") as HTMLSelectElement;
   const localWrap = document.getElementById("sc-local-wrap")!;
   const autoHint = document.getElementById("sc-auto-hint")!;
+  // 图标来源切换：仅显示与当前选择相关的输入区
   typeSel.onchange = () => {
     localWrap.classList.toggle("hidden", typeSel.value !== "local");
     autoHint.classList.toggle("hidden", typeSel.value !== "auto");
@@ -365,6 +465,7 @@ function shortcutDialog(app: App): void {
   document.getElementById("sc-ok")!.onclick = async () => {
     let icon: string | undefined;
     if (typeSel.value === "local") {
+      // 本地图标：取输入框内容，去空白后为空则视为未指定
       icon = (document.getElementById("sc-local") as HTMLInputElement).value.trim() || undefined;
     } else if (typeSel.value === "auto") {
       // 优先复用已绑定的 app.icon；未绑定才传 url 触发抓取
@@ -381,6 +482,14 @@ function shortcutDialog(app: App): void {
 }
 
 // ---------- 应用编辑对话框 ----------
+
+/**
+ * 打开应用编辑/新建对话框。
+ *
+ * @param app 待编辑的应用；传 null 表示新建。
+ * 保存时收集表单值组装 Partial<App> 载荷：
+ * 钩子按行拆分（非空才提交），注入时机固定为 document_idle。
+ */
 function openModal(app: App | null): void {
   const modal = document.getElementById("modal")!;
   modal.classList.remove("hidden");
@@ -411,6 +520,7 @@ function openModal(app: App | null): void {
       url: val("f-url"),
       close_action: val("f-close") as "background" | "quit",
       hooks: {
+        // 钩子输入框按行拆分：整块非空才作为单条命令提交
         pre_launch: (val("f-pre") || "").trim() ? [val("f-pre")] : [],
         post_exit: (val("f-post") || "").trim() ? [val("f-post")] : [],
       },
@@ -428,10 +538,22 @@ function openModal(app: App | null): void {
   };
 }
 
+/**
+ * 读取表单输入框的当前值。
+ */
 function val(id: string): string {
   return (document.getElementById(id) as HTMLInputElement).value;
 }
 
+/**
+ * 构建一个表单字段（label + 控件）。
+ *
+ * @param label 字段标签
+ * @param id 控件 id（同时用于 label 的 for 关联）
+ * @param value 初始值
+ * @param options 非空时渲染为下拉框
+ * @param textarea 为 true 时渲染为多行文本域
+ */
 function field(label: string, id: string, value: string, options: HTMLOptionElement[] = [], textarea = false): HTMLElement {
   const wrap = h("div", { class: "field" }, [h("label", { for: id }, [label])]);
   if (textarea) {
@@ -455,6 +577,9 @@ function field(label: string, id: string, value: string, options: HTMLOptionElem
   return wrap;
 }
 
+/**
+ * 构建一个下拉选项。
+ */
 function opt(value: string, label: string): HTMLOptionElement {
   const o = el("option");
   o.value = value;
@@ -463,6 +588,10 @@ function opt(value: string, label: string): HTMLOptionElement {
 }
 
 // ---------- 启动 ----------
+
+/**
+ * 应用入口：初始化 API 客户端后渲染首屏。
+ */
 (async function bootstrap() {
   await initApi();
   render();

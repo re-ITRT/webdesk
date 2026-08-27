@@ -1,13 +1,18 @@
-//! WebDesk scheduler 模块 —— 应用生命周期调度
+//! WebDesk 调度器模块 —— 应用生命周期调度
 //!
-//! 职责：应用启动 / 激活 / 终止 / 后台驻留；为每个应用创建独立的
-//! WebviewWindow，执行 pre_launch / post_exit 钩子，处理 close_action
-//! （background=关窗隐藏驻留 / quit=直接关闭）。
+//! 职责：负责应用窗口的启动 / 激活 / 终止 / 重载与后台驻留（close_action=background
+//! 时关窗隐藏、quit 时直接关闭），为每个应用创建独立的 WebviewWindow，并在
+//! 生命周期关键节点调用 [`crate::hooks`] 执行 pre_launch / post_exit 钩子。
+//!
+//! 关键设计：
+//! - 窗口 label 统一为 `win-{app_id}`（见 [`Scheduler::window_label`]），是窗口与
+//!   应用配置之间的稳定映射键，激活 / 终止 / 重载均通过它定位窗口。
+//! - 窗口创建必须派发到 Tauri 主线程 runtime（见 [`launch_by_id`] 的死锁说明），
+//!   故所有可能触发窗口创建的入口均为异步函数。
+//! - 运行状态以 [`AppState`] 的 `running` 表（app_id -> RunningApp）为唯一事实源，
+//!   本模块通过 `handle.state::<AppState>()` 读写该状态并操作 Tauri 窗口。
 //!
 //! 关联 ADR：ADR-009（应用身份）、ADR-010（工作项生命周期）、ADR-011（单引擎）。
-//!
-//! 状态流：`AppState.running`（app_id -> RunningApp）是唯一事实源；
-//! 本模块通过 `app.state::<AppState>()` 读写它，并操作 Tauri 窗口。
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -15,13 +20,14 @@ use crate::app_state::AppState;
 use crate::hooks;
 use crate::types::{App, AppStatus};
 
-/// 运行中的应用表（轻量结构，M0 保留给测试 / 非 Tauri 环境使用）。
+/// 调度器门面（轻量结构，M0 阶段保留，供单元测试 / 非 Tauri 环境使用）。
 ///
-/// 真正的窗口创建由 [`launch_by_id`] 等函数完成；`Scheduler` 自身只做
-/// 无窗口环境下的状态追踪（窗口 label 生成、状态转换逻辑），便于单元测试。
+/// 真实窗口的创建与销毁由 [`launch_by_id`] / [`terminate_app`] 等自由函数完成；
+/// `Scheduler` 自身仅提供无窗口环境下的状态追踪能力（窗口 label 生成、状态转换
+/// 语义），使核心逻辑可在不依赖 Tauri runtime 的前提下进行单元测试。
 #[derive(Clone, Default)]
 pub struct Scheduler {
-    // 保留空结构：AppState 的 running map 才是运行时事实源
+    // 结构体保持为空：运行时的真实状态由 AppState.running 表承载，此处无需字段
 }
 
 impl Scheduler {
@@ -29,53 +35,58 @@ impl Scheduler {
         Self::default()
     }
 
-    /// 生成窗口 label：`win-{app_id}`
+    /// 生成窗口 label：`win-{app_id}`（窗口与应用配置之间的稳定映射键）
     pub fn window_label(app_id: &str) -> String {
         format!("win-{app_id}")
     }
 
-    /// 启动应用（M0 兼容：无窗口环境仅标记状态；真实窗口经 [`launch_by_id`]）
+    /// 启动应用（M0 兼容存根：无窗口环境下仅记录日志并返回窗口 label；
+    /// 真实窗口创建经 [`launch_by_id`]）
     pub fn launch(&self, app: &App) -> anyhow::Result<String> {
         let label = Self::window_label(&app.id);
         log::info!("[scheduler] 启动应用: {} ({})", app.name, app.url);
         Ok(label)
     }
 
-    /// 激活已有窗口（M0 兼容存根）
+    /// 激活已有窗口（M0 兼容存根：仅记录日志；真实激活逻辑见 [`activate_app_cmd`]）
     pub fn activate(&self, app: &App) -> anyhow::Result<()> {
         log::info!("[scheduler] 激活应用: {}", app.name);
         Ok(())
     }
 
-    /// 彻底终止（M0 兼容存根）
+    /// 彻底终止应用（M0 兼容存根：仅记录日志；真实终止逻辑见 [`terminate_app`]）
     pub fn terminate(&self, app: &App) -> anyhow::Result<()> {
         log::info!("[scheduler] 终止应用: {}", app.name);
         Ok(())
     }
 
-    /// 是否还有工作项（ADR-010：平台退出判定）
+    /// 是否仍有未完成的工作项（ADR-010：平台退出判定依据）
     #[allow(dead_code)]
     pub fn has_work(&self) -> bool {
-        // M1 起实际判定交给 AppState.has_work；此处保留 M0 语义
+        // M1 起实际判定交由 AppState.has_work 实现；此处保留 M0 语义（恒为 false）
         false
     }
 }
 
-/// 根据 app_id 生成窗口 label（辅助）
+/// 根据 app_id 生成窗口 label（自由函数形式的便捷封装，供模块内使用）
 fn window_label(id: &str) -> String {
     Scheduler::window_label(id)
 }
 
-/// 启动应用：若已运行则激活，否则创建独立 WebviewWindow 并执行钩子。
+/// 按应用 ID 启动应用：若窗口已存在则激活（显示并聚焦），否则创建独立的
+/// WebviewWindow 并执行 pre_launch 钩子。
 ///
-/// 重要：窗口创建必须发生在 Tauri 主线程 runtime。若本函数被 axum 的
-/// tokio runtime 调用（POST /api/.../launch），直接在这里 `build()` 会死锁
-/// （Tauri 等待主线程，主线程等待 HTTP 响应）。因此把创建派发到
-/// `tauri::async_runtime::spawn`，立即返回窗口 label。
+/// 返回窗口 label（`win-{app_id}`）；应用不存在时返回错误。
+///
+/// 死锁规避（关键设计）：窗口创建必须在 Tauri 主线程 runtime 上执行。若本函数
+/// 由 axum 的 tokio runtime 调用（如 POST /api/apps/{id}/launch），直接在此处
+/// 同步 `build()` 会形成死锁——Tauri 等待主线程处理窗口请求，而主线程正阻塞在
+/// HTTP 响应上。因此窗口创建被派发到 `tauri::async_runtime::spawn` 异步执行，
+/// 本函数立即返回窗口 label，不等待窗口就绪。
 pub async fn launch_by_id(handle: &AppHandle, id: &str) -> anyhow::Result<String> {
     let state = handle.state::<AppState>();
 
-    // 查应用配置
+    // 从应用仓库读取配置（不存在则报错）
     let app = state
         .store
         .get(id)?
@@ -83,7 +94,7 @@ pub async fn launch_by_id(handle: &AppHandle, id: &str) -> anyhow::Result<String
 
     let label = window_label(id);
 
-    // 已运行 → 激活（激活是主线程安全的，直接做）
+    // 窗口已存在 → 直接激活（show/focus 为主线程安全操作，无需派发）
     if let Some(win) = handle.get_webview_window(&label) {
         let _ = win.show();
         let _ = win.set_focus();
@@ -91,7 +102,7 @@ pub async fn launch_by_id(handle: &AppHandle, id: &str) -> anyhow::Result<String
         return Ok(label);
     }
 
-    // 派发窗口创建到 Tauri runtime（避免跨 runtime 死锁）
+    // 将窗口创建派发到 Tauri runtime，避免跨 runtime 同步等待造成死锁
     let handle_clone = handle.clone();
     let app_clone = app.clone();
     let label_clone = label.clone();
@@ -105,11 +116,11 @@ pub async fn launch_by_id(handle: &AppHandle, id: &str) -> anyhow::Result<String
     Ok(label)
 }
 
-/// 实际创建窗口（在 Tauri runtime 中执行）
+/// 在 Tauri runtime 上下文中实际创建窗口（由 [`launch_by_id`] 派发执行）
 async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Result<()> {
     let state = handle.state::<AppState>();
 
-    // 执行 pre_launch 钩子
+    // 窗口创建前先执行 pre_launch 钩子（失败不阻断窗口创建，仅记录）
     let _hook_results = hooks::run_pre_launch(&app.hooks, &app.hook_options);
 
     // 创建独立窗口
@@ -122,9 +133,9 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
     let app_id = app.id.clone();
     let app_name = app.name.clone();
 
-    // 应用图标（绑定到 app，而非每次现抓）：
-    // - 若 app.icon 已是本地路径 → 直接用
-    // - 否则抓取 favicon 并持久化到 app.icon（窗口/快捷方式共用）
+    // 解析应用图标（解析结果持久化到 app.icon，供窗口与快捷方式复用，避免每次现抓）：
+    // - app.icon 已指向存在的本地文件 → 直接使用
+    // - 否则抓取站点 favicon，成功后回写 app.icon 持久化
     let app_id_for_icon = app.id.clone();
     let app_url_for_icon = app.url.clone();
     let existing_icon = app.icon.clone();
@@ -137,7 +148,7 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
             })
             .await
             .unwrap_or(None);
-            // 抓取成功 → 持久化到 app.icon（完整路径，供窗口/快捷方式复用）
+            // 抓取成功 → 将完整路径回写 app.icon，供窗口 / 快捷方式后续复用
             if let Some(path) = &fetched {
                 let icon_full = path.to_string_lossy().to_string();
                 let state = handle.state::<AppState>();
@@ -149,7 +160,7 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
             fetched
         };
 
-    // 设置窗口图标：优先应用自身图标，回退 WebDesk 默认
+    // 装配窗口：优先使用应用图标，解码失败或缺失时回退 WebDesk 默认图标
     let mut builder = WebviewWindowBuilder::new(handle, label, WebviewUrl::External(url))
         .title(&app_name)
         .inner_size(1024.0, 720.0)
@@ -185,7 +196,7 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
         .build()
         .map_err(|e| anyhow::anyhow!("创建窗口失败: {e}"))?;
 
-    // 用 Tauri 直接设置窗口图标（确保任务栏/标题栏/Alt-Tab 都显示应用图标）
+    // 窗口创建后再显式 set_icon 一次，确保任务栏 / 标题栏 / Alt-Tab 均显示应用图标
     if let Some(path) = &icon_path {
         if let Ok(bytes) = std::fs::read(path) {
             if let Ok(img) = tauri::image::Image::from_bytes(&bytes) {
@@ -195,8 +206,8 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
         }
     }
 
-    // Windows：设置窗口独立任务栏身份（独立 AUMID），
-    // 使应用窗口在任务栏与 WebDesk 主进程完全分开
+    // Windows 专属：为窗口设置独立的任务栏身份（独立 AUMID），
+    // 使应用窗口在任务栏上与 WebDesk 主进程完全分离
     #[cfg(target_os = "windows")]
     {
         let icon_str = icon_path.as_ref().map(|p| p.to_string_lossy().to_string());
@@ -212,17 +223,17 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
         }
     }
 
-    // 注入 CSS / JS
+    // 注入桥接脚本与用户自定义 CSS / JS
     inject_webview(&window, app);
 
-    // close_action 处理：background=关窗隐藏驻留；quit=直接关闭（默认行为）
+    // 按 close_action 装配关窗行为：background=关窗隐藏驻留；quit=直接关闭（默认）
     if close_action == "background" {
         let app_id_for_hide = app_id.clone();
         let state_handle = handle.clone();
         let label_for_hide = label.to_string();
         window.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // 驻留：阻止真正关闭，隐藏窗口，标记为 background
+                // 驻留模式：阻止窗口真正销毁，改为隐藏并标记为 background 状态
                 api.prevent_close();
                 let state = state_handle.state::<AppState>();
                 state.mark_background(&app_id_for_hide);
@@ -234,21 +245,21 @@ async fn spawn_window(handle: &AppHandle, app: &App, label: &str) -> anyhow::Res
         });
     }
 
-    // 标记运行
+    // 窗口就绪后登记运行状态（running 表为唯一事实源）
     state.mark_running(&app_id, label, "running");
 
     log::info!("[scheduler] 已创建窗口: {label} (url={})", app.url);
     Ok(())
 }
 
-/// 向窗口注入桥接 JS（window.webdesk.exec）+ 用户配置的 CSS / JS
+/// 向窗口注入桥接脚本（`window.webdesk.exec`）与用户配置的 CSS / JS。
 ///
-/// 注入 `window.webdesk.exec(command)`：网页可安全请求执行本地命令。
-/// - 后端检查授权（app+command），未授权返回 needs_approval → 注入脚本弹授权框
-/// - 授权框含"不再提示"勾选，记录后不再弹
-/// - 已授权 → 直接执行
+/// 注入的 `window.webdesk.exec(command)` 允许网页安全地请求执行本地命令，流程：
+/// - 后端按（app, command）检查授权；未授权时返回 needs_approval，注入脚本弹出授权框；
+/// - 授权框提供"不再提示"勾选，勾选后授权结果被持久化，后续不再弹框；
+/// - 已授权 → 直接执行并返回结果。
 fn inject_webview(window: &tauri::WebviewWindow, app: &App) {
-    // 1) 注入桥接 JS（始终注入，网页可调用）
+    // 1) 桥接脚本（无条件注入，网页随时可调用）
     let app_id = serde_json::to_string(&app.id).unwrap_or_else(|_| "''".to_string());
     let bridge = format!(
         r#"
@@ -361,7 +372,7 @@ fn inject_webview(window: &tauri::WebviewWindow, app: &App) {
 "#
     );
 
-    // 2) 用户配置的 CSS / JS
+    // 2) 追加用户配置的 CSS / JS（非空时才注入）
     let mut script = String::new();
     script.push_str(&bridge);
 
@@ -383,12 +394,15 @@ fn inject_webview(window: &tauri::WebviewWindow, app: &App) {
         ));
     }
 
-    // 初始化脚本会在每次 document 创建时执行
+    // 通过 eval 注入：该脚本在每次 document 创建时执行，保证桥接与样式始终生效
     let _ = window.eval(&script);
     log::info!("[scheduler] 已注入桥接 + CSS/JS 到窗口 {}", window.label());
 }
 
-/// 彻底终止应用：关闭窗口 + post_exit 钩子 + 标记停止
+/// 彻底终止应用：销毁窗口 → 执行 post_exit 钩子 → 标记停止。
+///
+/// 返回 JSON 状态：`{"status": "terminated"}`；若应用本未运行则返回
+/// `{"status": "not_running"}`（幂等，不报错）。
 pub fn terminate_app(handle: &AppHandle, id: &str) -> anyhow::Result<serde_json::Value> {
     let state = handle.state::<AppState>();
     let label = window_label(id);
@@ -399,54 +413,55 @@ pub fn terminate_app(handle: &AppHandle, id: &str) -> anyhow::Result<serde_json:
         return Ok(serde_json::json!({"status": "not_running"}));
     }
 
-    // 取应用配置（可能已被删除，但窗口还在）
+    // 读取应用配置（应用可能已被删除，但窗口仍存在，需照常清理）
     let app = state.store.get(id)?;
 
-    // 关闭并销毁窗口
+    // 销毁窗口（若窗口已不存在则跳过）
     if let Some(win) = handle.get_webview_window(&label) {
         let _ = win.destroy();
     }
 
-    // 执行 post_exit 钩子
+    // 窗口销毁后执行 post_exit 钩子（配置缺失时跳过）
     if let Some(app) = &app {
         let _ = hooks::run_post_exit(&app.hooks, &app.hook_options);
     }
 
-    // 标记停止
+    // 从 running 表移除该应用
     state.mark_stopped(id);
     log::info!("[scheduler] 已终止应用: {id}");
 
     Ok(serde_json::json!({"status": "terminated"}))
 }
 
-/// 重新加载应用（配置修改后立即生效）：
-/// 销毁现有窗口，重新创建（应用新的 URL / close_action / 注入等）。
-/// 若应用未运行，则直接启动。
+/// 重新加载应用：销毁现有窗口后按最新配置（URL / close_action / 注入等）重建，
+/// 使配置修改立即生效；若应用当前未运行，则直接启动。
+///
+/// 返回 JSON 状态：`{"status": "reloaded"}`；启动失败时返回错误。
 pub async fn reload_app(handle: &AppHandle, id: &str) -> anyhow::Result<serde_json::Value> {
     let state = handle.state::<AppState>();
     let label = window_label(id);
 
-    // 若窗口存在，先销毁（应用新配置）
+    // 窗口存在则先销毁并标记停止，确保重建时应用最新配置
     if let Some(win) = handle.get_webview_window(&label) {
         let _ = win.destroy();
         state.mark_stopped(id);
         log::info!("[scheduler] 配置已修改，销毁旧窗口: {label}");
     }
 
-    // 重新启动（应用新配置）
+    // 按最新配置重新启动
     match launch_by_id(handle, id).await {
         Ok(_) => Ok(serde_json::json!({"status": "reloaded"})),
         Err(e) => Err(e),
     }
 }
 
-/// Tauri command：启动应用（异步，避免在同步命令中创建窗口导致的死锁）
+/// Tauri command：启动应用。声明为异步以规避在同步命令中创建窗口导致的死锁。
 #[tauri::command]
 pub async fn launch_app_cmd(handle: tauri::AppHandle, id: String) -> Result<String, String> {
     launch_by_id(&handle, &id).await.map_err(|e| e.to_string())
 }
 
-/// Tauri command：终止应用
+/// Tauri command：终止应用（返回 JSON 状态；失败时返回 error 状态而非抛错）
 #[tauri::command]
 pub fn terminate_app_cmd(handle: tauri::AppHandle, id: String) -> serde_json::Value {
     match terminate_app(&handle, &id) {
@@ -458,7 +473,7 @@ pub fn terminate_app_cmd(handle: tauri::AppHandle, id: String) -> serde_json::Va
     }
 }
 
-/// Tauri command：激活应用
+/// Tauri command：激活应用（显示并聚焦窗口，同步登记运行状态）
 #[tauri::command]
 pub fn activate_app_cmd(
     handle: tauri::AppHandle,
@@ -477,7 +492,7 @@ pub fn activate_app_cmd(
     }
 }
 
-/// Tauri command：列出运行中的应用
+/// Tauri command：列出当前运行中的应用（返回 AppStatus 列表）
 #[tauri::command]
 pub fn list_running_cmd(state: tauri::State<AppState>) -> Vec<AppStatus> {
     state.list_running()
@@ -540,7 +555,7 @@ mod tests {
 
     #[test]
     fn inject_script_contains_css_js() {
-        // 验证注入脚本会包含转义后的 CSS/JS 内容
+        // 验证注入脚本包含转义后的 CSS / JS 内容
         let css = "body { color: red; }";
         let js = "console.log('hi');";
         let script = format!(
