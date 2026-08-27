@@ -275,6 +275,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn run_simple_hook() {
         let opts = HookOptions::default();
         let result = run_hook("test", "echo webdesk", &opts);
@@ -283,6 +284,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn run_failing_hook_captures_exit() {
         let opts = HookOptions::default();
         let result = run_hook("test", "exit 3", &opts);
@@ -290,6 +292,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn timeout_kills_slow_hook() {
         let opts = HookOptions {
             shell: "cmd".into(),
